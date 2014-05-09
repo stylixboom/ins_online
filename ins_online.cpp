@@ -156,7 +156,7 @@ int main(int argc,char *argv[])
                     }
                 case '4':
                     {
-                        //ACW_RUN();
+                        //FIX_RUN();
                         break;
                     }
 				}
@@ -846,1310 +846,6 @@ template<typename T, typename U> void calculate_symmat_distance(size_t nvert, co
     }
 }
 
-void AUTOW_SD(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight)
-{
-    bool* query_bin_mask = new bool[run_param.CLUSTER_SIZE];        // cluster_id, flag
-    for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
-        query_bin_mask[cluster_id] = false;
-    for (size_t bin_id = 0; bin_id < query_bow.size(); bin_id++)
-        query_bin_mask[query_bow[bin_id].cluster_id] = true;
-
-    // Calculate count for each class
-    unordered_map<size_t, size_t> frequent_item_count;      // cluster_id, count
-    unordered_map<size_t, float> frequent_item_weight;      // cluster_id, weight
-    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-    {
-        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-        {
-            size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-            // Skip if not fall within query
-            //if (!query_bin_mask[cluster_id])
-                //continue;
-
-            if (frequent_item_count.find(cluster_id) == frequent_item_count.end())
-            {
-                frequent_item_count[cluster_id] = 0;
-                frequent_item_weight[cluster_id] = 0;
-            }
-            frequent_item_count[cluster_id]++;
-            frequent_item_weight[cluster_id]++;
-        }
-    }
-    // Find max
-    size_t item_count_max = 0;
-    unordered_map<size_t, size_t>::iterator frequent_item_count_it;
-    for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
-    {
-        if (item_count_max < frequent_item_count_it->second)
-            item_count_max = frequent_item_count_it->second;
-    }
-
-/*
-    // Normalize and filtering
-    unordered_map<size_t, float>::iterator frequent_item_weight_it;
-    for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
-    {
-        frequent_item_weight_it->second /= item_count_max;  // normalize
-        if (frequent_item_weight_it->second < minsup / 100.0f)
-            frequent_item_weight_it->second = 0;            // not pass minsup, set zero
-    }
-    frequent_item_weight.swap(fi_weight);
-*/
-
-
-    /// Cut test
-    stringstream pass_pcut;
-    int bin_pass;
-    // Write rank_id
-    pass_pcut << "rank_id,";
-    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-        pass_pcut << bow_id << ",";
-    pass_pcut << "all_bin" << endl;
-    // Write total bin
-    pass_pcut << "total_bin,";
-    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-        pass_pcut << bow_sig_pack[bow_id].size() << ",";
-    pass_pcut << frequent_item_count.size() << endl;
-
-    // Write cut for each rank
-    // pcut is percentage
-    vector< vector<float> > total_sd;
-    int pcut_step = 5;
-    for (int pcut = pcut_step; pcut <= 100; pcut += pcut_step)
-    {
-        pass_pcut << pcut << ",";
-        /// -- Pass test
-        unordered_map<size_t, size_t> bin_pass_count;       // cluster_id, pass_count
-        unordered_map<size_t, bool> bin_pass_mask;          // cluster_id, pass_flag
-        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-        {
-            bin_pass = 0;
-            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-            {
-                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-                // Skip if not fall within query
-                //if (!query_bin_mask[cluster_id])
-                    //continue;
-
-                bool pass_cut = float(frequent_item_count[cluster_id]) / item_count_max >= pcut / 100.0f;
-
-                if (pass_cut)
-                {
-                    if (bin_pass_count.find(cluster_id) == bin_pass_count.end())
-                        bin_pass_count[cluster_id] = 0;
-                    bin_pass_count[cluster_id]++;
-                    bin_pass++; // bin pass without mask
-                    bin_pass_mask[cluster_id] = pass_cut;
-                }
-                else
-                    bin_pass_mask[cluster_id] |= pass_cut;
-            }
-            pass_pcut << bin_pass << ",";
-        }
-        pass_pcut << bin_pass_count.size() << ",";
-
-        /// -- Compactness test
-        // compactness : It is the sum of squared distance from each point to their corresponding centers.
-        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-        {
-            size_t total_feature_pass_count = 0;
-
-            // Accumulate total feature pass count
-            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-            {
-                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-                // Skip if not fall within query
-                //if (!query_bin_mask[cluster_id])
-                    //continue;
-
-                if (bin_pass_mask[cluster_id])
-                    total_feature_pass_count += bow_sig_pack[bow_id][bin_id].features.size();
-            }
-
-            // Continue finding SD if we have vertex pass p_cut more than 3 points
-            // 1. Finding centroid
-            // 2. Packing distance to data, then get mean
-            // 3. Calc SD by sd_with_premean
-
-            float rank_sd = 0.0f;
-            if (total_feature_pass_count > 3)
-            {
-                size_t vert_count = 0;
-                float* vertx = new float[total_feature_pass_count];
-                float* verty = new float[total_feature_pass_count];
-                float rank_centroid[2] = {0.0f, 0.0f};                                      // Centroid for this rank
-                float* rank_dist_to_centroid = new float[total_feature_pass_count];
-                float rank_dist_mean = 0.0f;
-
-                // 1. Finding centroid
-                for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-                {
-                    size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-                    // Skip if not fall within query
-                    //if (!query_bin_mask[cluster_id])
-                        //continue;
-
-                    if (bin_pass_mask[cluster_id])
-                    {
-                        for (size_t feature_id = 0; feature_id < bow_sig_pack[bow_id][bin_id].features.size(); feature_id++)
-                        {
-                            rank_centroid[0] += vertx[vert_count] = bow_sig_pack[bow_id][bin_id].features[feature_id].x;    // Accumulating centroid
-                            rank_centroid[1] += verty[vert_count] = bow_sig_pack[bow_id][bin_id].features[feature_id].y;
-                            vert_count++;
-                        }
-                    }
-                }
-                // Calculate centroid
-                rank_centroid[0] /= vert_count;
-                rank_centroid[1] /= vert_count;
-
-                // 2. Packing distance to data, then get mean
-                for (size_t vert_id = 0; vert_id < vert_count; vert_id++)
-                {
-                    rank_dist_to_centroid[vert_id] = sqrt((vertx[vert_id] - rank_centroid[0]) * (vertx[vert_id] - rank_centroid[0]) +
-                                                          (verty[vert_id] - rank_centroid[1]) * (verty[vert_id] - rank_centroid[1]));
-                    //cout << "Dist: " << rank_dist_to_centroid[vert_id] << endl;
-                    rank_dist_mean += rank_dist_to_centroid[vert_id];       // Accumulating mean
-                }
-                // Calculating mean
-                rank_dist_mean /= vert_count;
-
-
-                // 3. Calculate by SD_PREMEAN
-                rank_sd = calc_sd_premean(rank_dist_to_centroid, vert_count, rank_dist_mean);
-
-                /*stringstream path_out;
-                path_out << "/home/stylix/webstylix/code/ins_online/out_test/group_img_out_" << bow_id << "_" << pcut << "_lnj.png";
-                cout << "Write out image.."; cout.flush();
-                imwrite(path_out.str(), group_img_out);
-                cout << "done" << endl;*/
-
-                Mat test_img_out(1000, 1000, CV_8UC3, Scalar(0));
-
-/*
-                // Draw line
-                for (size_t point_idx = 0; point_idx < total_feature_pass_count - 1; point_idx++)
-                {
-                    size_t node_idx = best_path[point_idx];
-                    size_t next_node_idx = best_path[point_idx + 1];
-
-                    Point2i pstart(vertx[node_idx] * 1000, verty[node_idx] * 1000);
-                    Point2i pend(vertx[next_node_idx] * 1000, verty[next_node_idx] * 1000);
-
-                    // Draw line only pass threshold
-                    if (path_solver.get_cost_between(node_idx, next_node_idx) <= threshold)
-                        line(test_img_out, pstart, pend, Scalar(0, 0, 255), 1, CV_AA);
-
-                    circle(test_img_out, pstart, 0, Scalar(0, 255, 0), 2, CV_AA);
-                    if (point_idx == total_feature_pass_count - 2)
-                        circle(test_img_out, pend, 0, Scalar(0, 255, 0), 2, CV_AA);
-                }
-*/
-
-                /*stringstream path2_out;
-                path2_out << "/home/stylix/webstylix/code/ins_online/out_test/group_img_out_" << bow_id << "_" << pcut << "_lnj_p.png";
-                cout << "Write out image.."; cout.flush();
-                imwrite(path2_out.str(), test_img_out);
-                cout << "done" << endl;*/
-
-                // Release mem
-                delete[] vertx;
-                delete[] verty;
-                delete[] rank_dist_to_centroid;
-            }
-
-            // Save Compactness for finding best minsup later
-            if (bow_id + 1 > total_sd.size())
-            {
-                vector<float> sub_total_sd;
-                sub_total_sd.push_back(rank_sd);
-                total_sd.push_back(sub_total_sd);
-            }
-            else
-                total_sd[bow_id].push_back(rank_sd);
-
-            // Print out SD
-            pass_pcut << rank_sd << ",";
-        }
-        // pass one cut, continue next cut
-        pass_pcut << endl;
-    }
-
-    // Write to file
-    text_write(query_path + "_rankcut.csv", pass_pcut.str(), false);
-
-    // Total SD Debug
-    cout << setprecision(5) << fixed;
-    for (size_t bow_id = 0; bow_id < total_sd.size(); bow_id++)
-    {
-        for (size_t cut_id = 0; cut_id < total_sd[bow_id].size(); cut_id++)
-        {
-            cout << total_sd[bow_id][cut_id] << " ";
-        }
-        cout << endl;
-    }
-
-
-    if (true)
-    {
-        /// Finding the best p_cut for this top-k_rank
-        /*
-        Step to find the best pCut
-        1. Calculate abs-diff of sd for each top-k
-        2. Calculate avg of abs-diff from all top-k rank
-        3. Find abs-slope
-        4. Find lowest abs-slope is to find the highest stability of function
-        */
-
-        // 1-2 // Find avg-abs-diff for each sd_step
-        vector<float> avg_abs_diff_sd;
-        vector<size_t> avg_abs_diff_sd_label;
-        for (size_t pcut_id = 1; pcut_id < total_sd[0].size(); pcut_id++)
-        {
-            float curr_avg = 0.0f;
-            size_t non_zero_count = 0;
-            for (size_t bow_id = 0; bow_id < total_sd.size(); bow_id++)
-            {
-                float curr_diff = total_sd[bow_id][pcut_id - 1] - total_sd[bow_id][pcut_id];
-                if (curr_diff != 0)
-                {
-                    curr_avg += abs(curr_diff);
-                    non_zero_count++;
-                }
-            }
-            if (non_zero_count > 0)
-            {
-                avg_abs_diff_sd.push_back(curr_avg / non_zero_count);
-                avg_abs_diff_sd_label.push_back(pcut_id * pcut_step);     // pcut start from pcut_step 1
-            }
-        }
-        cout << "avg_abs_diff_sd_label.size() : " << avg_abs_diff_sd_label.size() << endl;
-        for (size_t avg_id = 0; avg_id < avg_abs_diff_sd_label.size(); avg_id++)
-            cout << avg_abs_diff_sd_label[avg_id] << "\t"; cout.flush();
-        cout << endl;
-        for (size_t avg_id = 0; avg_id < avg_abs_diff_sd.size(); avg_id++)
-            cout << avg_abs_diff_sd[avg_id] << "\t"; cout.flush();
-        cout << endl;
-
-        // 3 calc slope
-        vector<float> slope_avg_abs_diff_sd;
-        vector<size_t> slope_avg_abs_diff_sd_label;
-        if (avg_abs_diff_sd.size() >= 3)
-        {
-            //for (size_t diff_id = 2; diff_id < avg_abs_diff_sd.size() - 2; diff_id++)
-            for (size_t diff_id = 1; diff_id < avg_abs_diff_sd.size() - 1; diff_id++)
-            //for (size_t diff_id = 1; diff_id < avg_abs_diff_sd.size(); diff_id++)
-            {
-                // Packing data to find slope
-                /*float* x_data = new float[5];
-                float* y_data = new float[5];
-                x_data[0] = diff_id - 2;
-                x_data[1] = diff_id - 1;
-                x_data[2] = diff_id;
-                x_data[3] = diff_id + 1;
-                x_data[4] = diff_id + 2;
-                y_data[0] = avg_abs_diff_sd[diff_id - 2];
-                y_data[1] = avg_abs_diff_sd[diff_id - 1];
-                y_data[2] = avg_abs_diff_sd[diff_id];
-                y_data[3] = avg_abs_diff_sd[diff_id + 1];
-                y_data[4] = avg_abs_diff_sd[diff_id + 2];
-                */
-                float* x_data = new float[3];
-                float* y_data = new float[3];
-                x_data[0] = diff_id - 1;
-                x_data[1] = diff_id;
-                x_data[2] = diff_id + 1;
-                y_data[0] = avg_abs_diff_sd[diff_id - 1];
-                y_data[1] = avg_abs_diff_sd[diff_id];
-                y_data[2] = avg_abs_diff_sd[diff_id + 1];
-                /*float* x_data = new float[2];
-                float* y_data = new float[2];
-                x_data[0] = diff_id - 1;
-                x_data[1] = diff_id;
-                y_data[0] = avg_abs_diff_sd[diff_id - 1];
-                y_data[1] = avg_abs_diff_sd[diff_id];*/
-
-                //slope_avg_abs_diff_sd.push_back(abs(calc_slope(x_data, y_data, 5)));
-                slope_avg_abs_diff_sd.push_back(abs(calc_slope(x_data, y_data, 3)));
-                //slope_avg_abs_diff_sd.push_back(abs(calc_slope(x_data, y_data, 2)));
-                slope_avg_abs_diff_sd_label.push_back(avg_abs_diff_sd_label[diff_id]);
-
-                // Release memory
-                delete[] x_data;
-                delete[] y_data;
-            }
-        }
-        cout << "slope_avg_abs_diff_sd_label.size() : " << slope_avg_abs_diff_sd_label.size() << endl;
-        for (size_t slope_id = 0; slope_id < slope_avg_abs_diff_sd_label.size(); slope_id++)
-            cout << slope_avg_abs_diff_sd_label[slope_id] << "\t"; cout.flush();
-        cout << endl;
-        for (size_t slope_id = 0; slope_id < slope_avg_abs_diff_sd.size(); slope_id++)
-            cout << slope_avg_abs_diff_sd[slope_id] << "\t"; cout.flush();
-        cout << endl;
-
-        // Find the most lowest slope
-        float min_slope = 1000000.0f;
-        size_t min_slope_id = 0;
-        for (size_t slope_id = 0; slope_id < slope_avg_abs_diff_sd.size(); slope_id++)
-        {
-            if (min_slope > slope_avg_abs_diff_sd[slope_id])
-            {
-                min_slope = slope_avg_abs_diff_sd[slope_id];
-                min_slope_id = slope_id;
-            }
-        }
-
-        size_t good_pcut = 1;  // default, low default in case less similarity for top-k rank, then minsup should be lower
-        if (slope_avg_abs_diff_sd.size() > 0)
-            good_pcut = slope_avg_abs_diff_sd_label[min_slope_id];  // start from pcut + 1
-
-        cout << "Debug good_pcut: " << good_pcut << endl;
-
-        // Calculate item weight from ACW
-        frequent_item_count.clear();
-        frequent_item_weight.clear();
-        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-        {
-            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-            {
-                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-                // Skip if not fall within query
-                //if (!query_bin_mask[cluster_id])
-                    //continue;
-
-                if (frequent_item_count.find(cluster_id) == frequent_item_count.end())
-                {
-                    frequent_item_count[cluster_id] = 0;
-                    frequent_item_weight[cluster_id] = 0;
-                }
-                frequent_item_count[cluster_id]++;
-                frequent_item_weight[cluster_id]++;
-            }
-        }
-        // Find max
-        item_count_max = 0;
-        //unordered_map<size_t, size_t>::iterator frequent_item_count_it;
-        for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
-        {
-            if (item_count_max < frequent_item_count_it->second)
-                item_count_max = frequent_item_count_it->second;
-        }
-
-        // Normalize and filtering
-        unordered_map<size_t, float>::iterator frequent_item_weight_it;
-        for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
-        {
-            frequent_item_weight_it->second /= item_count_max;          // normalize by max of cluster_frequency
-            if (frequent_item_weight_it->second < good_pcut / 100.0f)   // If auto minsup is false -> not pass
-                frequent_item_weight_it->second = 0;                    // not pass minsup, set zero
-        }
-        frequent_item_weight.swap(fi_weight);
-    }
-    else
-    {
-        /// Finding the best p_cut for each rank_id
-        /*
-        Step to find the best pCut for each toprank
-        1. Get abs-SD different, for finding the stability of varience(SD)
-        2. Find abs-slope
-        3. Find lowest abs-slope is to find the highest stability of function
-        */
-        vector<size_t> good_pcut;
-        for (size_t bow_id = 0; bow_id < total_sd.size(); bow_id++)
-        {
-            // Find different for each sd_step
-            vector<float> sd_diff;
-            vector<size_t> pcut_sd_diff_label;
-            float prev_diff = 0.0f;
-            for (size_t pcut_id = 1; pcut_id < total_sd[bow_id].size(); pcut_id++)
-            {
-                float curr_diff = abs(total_sd[bow_id][pcut_id - 1] - total_sd[bow_id][pcut_id]);
-
-                if (curr_diff != 0 && prev_diff != curr_diff)
-                {
-                    sd_diff.push_back(curr_diff);
-                    pcut_sd_diff_label.push_back(pcut_id * pcut_step);     // pcut start from pcut_step 1
-
-                    prev_diff = curr_diff;
-                }
-            }
-
-            // Find slope for each sd_step
-            vector<float> sd_diff_slope;
-            vector<size_t> pcut_sd_diff_slope_label;
-            for (size_t sd_id = 1; sd_id < sd_diff.size() - 1; sd_id++)
-            {
-                // Packing data to find slope
-                float* x_data = new float[3];
-                float* y_data = new float[3];
-                x_data[0] = sd_id - 1;
-                x_data[1] = sd_id;
-                x_data[2] = sd_id + 1;
-                y_data[0] = sd_diff[sd_id - 1];
-                y_data[1] = sd_diff[sd_id];
-                y_data[2] = sd_diff[sd_id + 1];
-                /*float* x_data = new float[2];
-                float* y_data = new float[2];
-                x_data[0] = sd_id;
-                x_data[1] = sd_id + 1;
-                y_data[0] = sd_diff[sd_id];
-                y_data[1] = sd_diff[sd_id + 1];*/
-
-                sd_diff_slope.push_back(abs(calc_slope(x_data, y_data, 3)));
-                //sd_diff_slope.push_back(abs(calc_slope(x_data, y_data, 2)));
-                pcut_sd_diff_slope_label.push_back(pcut_sd_diff_label[sd_id]);
-
-                // Release memory
-                delete[] x_data;
-                delete[] y_data;
-            }
-
-            // Find the most lowest slope
-            float min_slope = 1000000.0f;
-            size_t min_slope_id = 0;
-            for (size_t sd_id = 0; sd_id < sd_diff_slope.size(); sd_id++)
-            {
-                if (min_slope > sd_diff_slope[sd_id])
-                {
-                    min_slope = sd_diff_slope[sd_id];
-                    min_slope_id = sd_id;
-                }
-            }
-
-            // Save good p_cut for this rank
-            if (pcut_sd_diff_slope_label.size() > 0)    // Skip if cannot find any slope, data not enough
-                good_pcut.push_back(pcut_sd_diff_slope_label[min_slope_id]);
-            else
-                good_pcut.push_back(1);                 // Use default
-
-            // Release memory
-            sd_diff.clear();
-            pcut_sd_diff_label.clear();
-            sd_diff_slope.clear();
-            pcut_sd_diff_slope_label.clear();
-        }
-
-        // Debut best_pcut
-        cout << "Debug good pcut: ";
-        for (size_t bow_id = 0; bow_id < good_pcut.size(); bow_id++)
-            cout << good_pcut[bow_id] << " ";
-        cout << endl;
-
-
-        // Calculate item weight from ACW
-        frequent_item_count.clear();
-        frequent_item_weight.clear();
-        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-        {
-            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-            {
-                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-                // Skip if not fall within query
-                //if (!query_bin_mask[cluster_id])
-                    //continue;
-
-                if (frequent_item_count.find(cluster_id) == frequent_item_count.end())
-                {
-                    frequent_item_count[cluster_id] = 0;
-                    frequent_item_weight[cluster_id] = 0;
-                }
-                frequent_item_count[cluster_id]++;
-                frequent_item_weight[cluster_id]++;
-            }
-        }
-        // Find max
-        item_count_max = 0;
-        //unordered_map<size_t, size_t>::iterator frequent_item_count_it;
-        for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
-        {
-            if (item_count_max < frequent_item_count_it->second)
-                item_count_max = frequent_item_count_it->second;
-        }
-
-        // Cut
-        bool* auto_minsup_filter = new bool[run_param.CLUSTER_SIZE];
-        for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
-            auto_minsup_filter[cluster_id] = false;
-        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-        {
-            bin_pass = 0;
-            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-            {
-                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-                // Skip if not fall within query
-                //if (!query_bin_mask[cluster_id])
-                    //continue;
-
-                auto_minsup_filter[cluster_id] |= float(frequent_item_count[cluster_id]) / item_count_max >= good_pcut[bow_id] / 100.0f;
-            }
-        }
-
-        // Normalize and filtering
-        unordered_map<size_t, float>::iterator frequent_item_weight_it;
-        for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
-        {
-            frequent_item_weight_it->second /= item_count_max;          // normalize by max of cluster_frequency
-            if (!auto_minsup_filter[frequent_item_weight_it->first])    // If auto minsup is false -> not pass
-                frequent_item_weight_it->second = 0;                    // not pass minsup, set zero
-        }
-        frequent_item_weight.swap(fi_weight);
-    }
-
-    // Release memory
-    delete[] query_bin_mask;
-    //delete[] auto_minsup_filter;
-
-}
-
-void AUTOW_COMPACTNESS(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight)
-{
-    bool* query_bin_mask = new bool[run_param.CLUSTER_SIZE];        // cluster_id, flag
-    for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
-        query_bin_mask[cluster_id] = false;
-    for (size_t bin_id = 0; bin_id < query_bow.size(); bin_id++)
-        query_bin_mask[query_bow[bin_id].cluster_id] = true;
-
-    // Calculate item weight from ACW
-    unordered_map<size_t, size_t> frequent_item_count;      // cluster_id, count
-    unordered_map<size_t, float> frequent_item_weight;      // cluster_id, weight
-    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-    {
-        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-        {
-            size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-            // Skip if not fall within query
-            if (!query_bin_mask[cluster_id])
-                continue;
-
-            if (frequent_item_count.find(cluster_id) == frequent_item_count.end())
-            {
-                frequent_item_count[cluster_id] = 0;
-                frequent_item_weight[cluster_id] = 0;
-            }
-            frequent_item_count[cluster_id]++;
-            frequent_item_weight[cluster_id]++;
-        }
-    }
-    // Find max
-    size_t item_count_max = 0;
-    unordered_map<size_t, size_t>::iterator frequent_item_count_it;
-    for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
-    {
-        if (item_count_max < frequent_item_count_it->second)
-            item_count_max = frequent_item_count_it->second;
-    }
-    /*
-    // Normalize and filtering
-    unordered_map<size_t, float>::iterator frequent_item_weight_it;
-    for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
-    {
-        frequent_item_weight_it->second /= item_count_max;  // normalize
-        if (frequent_item_weight_it->second < minsup / 100.0f)
-            frequent_item_weight_it->second = 0;            // not pass minsup, set zero
-    }
-    frequent_item_weight.swap(fi_weight);
-    */
-
-    /// Cut test
-    stringstream pass_pcut;
-    int bin_pass;
-    // Write rank_id
-    pass_pcut << "rank_id,";
-    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-        pass_pcut << bow_id << ",";
-    pass_pcut << "all_bin" << endl;
-    // Write total bin
-    pass_pcut << "total_bin,";
-    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-        pass_pcut << bow_sig_pack[bow_id].size() << ",";
-    pass_pcut << frequent_item_count.size() << endl;
-
-    // Write cut for each rank
-    // pcut is percentage
-    vector< vector<float> > compactness;
-    int pcut_step = 5;
-    for (int pcut = pcut_step; pcut <= 100; pcut += pcut_step)
-    {
-        pass_pcut << pcut << ",";
-        /// -- Pass test
-        unordered_map<size_t, size_t> bin_pass_count;       // cluster_id, pass_count
-        unordered_map<size_t, bool> bin_pass_mask;          // cluster_id, pass_flag
-        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-        {
-            bin_pass = 0;
-            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-            {
-                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-                // Skip if not fall within query
-                if (!query_bin_mask[cluster_id])
-                    continue;
-
-                bool pass_cut = float(frequent_item_count[cluster_id]) / item_count_max >= pcut / 100.0f;
-
-                if (pass_cut)
-                {
-                    if (bin_pass_count.find(cluster_id) == bin_pass_count.end())
-                        bin_pass_count[cluster_id] = 0;
-                    bin_pass_count[cluster_id]++;
-                    bin_pass++; // bin pass without mask
-                    bin_pass_mask[cluster_id] = pass_cut;
-                }
-                else
-                    bin_pass_mask[cluster_id] |= pass_cut;
-            }
-            pass_pcut << bin_pass << ",";
-        }
-        pass_pcut << bin_pass_count.size() << ",";
-
-        /// -- Compactness test
-        // compactness : It is the sum of squared distance from each point to their corresponding centers.
-        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-        {
-            size_t total_feature_pass_count = 0;
-
-            // Accumulate total feature pass count
-            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-            {
-                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-                // Skip if not fall within query
-                if (!query_bin_mask[cluster_id])
-                    continue;
-
-                if (bin_pass_mask[cluster_id])
-                    total_feature_pass_count += bow_sig_pack[bow_id][bin_id].features.size();
-            }
-
-            // Continue finding TSP if we have vertex pass p_cut more than 3 points
-            // 1. Finding TSP
-            // 2. Cut far distance out by otsu thresholding
-            // 3. Calculate compactness for each small group
-            // 4. Average compactness
-            //
-            // Compactness is mean of square distance to centriod
-            // Distance = sqrt((x1-xm)^2+(y1-ym)^2)
-            // So, compactness = sum(distance^2)/n
-            //                 = sum(sqrt((x1-xm)^2+(y1-ym)^2)^2)/n
-            //                 = sum((x1-xm)^2+(y1-ym)^2)/n
-            float total_average_compactness = 0.0f;
-            if (total_feature_pass_count > 3)
-            {
-                // 1.1 Packing feature
-                size_t vert_count = 0;
-                float* vertx = new float[total_feature_pass_count];
-                float* verty = new float[total_feature_pass_count];
-                for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-                {
-                    size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-                    // Skip if not fall within query
-                    if (!query_bin_mask[cluster_id])
-                        continue;
-
-                    if (bin_pass_mask[cluster_id])
-                    {
-                        for (size_t feature_id = 0; feature_id < bow_sig_pack[bow_id][bin_id].features.size(); feature_id++)
-                        {
-                            vertx[vert_count] = bow_sig_pack[bow_id][bin_id].features[feature_id].x;
-                            verty[vert_count] = bow_sig_pack[bow_id][bin_id].features[feature_id].y;
-                            vert_count++;
-                        }
-                    }
-                }
-
-                // 1.2 Create symmat distance matrix
-                float* symmat_dist;
-                create_symmat(symmat_dist, total_feature_pass_count);
-                calculate_symmat_distance(total_feature_pass_count, vertx, verty, symmat_dist);
-
-                // 1.3 Finding TSP
-                tsp path_solver(total_feature_pass_count, symmat_dist);
-
-                vector<size_t> best_path = path_solver.search_path(tsp::TSP_LINKNJOY);
-                cout << "get path size: " << best_path.size() << " done!" << endl;
-
-                // 2.1 Finding threshold
-                float threshold = path_solver.get_otsu_inter_distance() * 0.30;
-                cout << "Threshold: " << threshold << endl;
-
-                // 3.1 Cut group
-                size_t best_path_size = best_path.size();
-                size_t group_feature_first_idx = 0;
-                size_t group_feature_last_idx = 0;
-                float curr_group_average_x = 0.0f;
-                float curr_group_average_y = 0.0f;
-                vector< pair<size_t, size_t> > feature_groups;
-                Mat group_img_out(1000, 1000, CV_8UC3, Scalar(0));  // visualize group
-                for (size_t node_idx = 0; node_idx < best_path_size - 1; node_idx++)
-                {
-                    size_t node_label = best_path[node_idx];
-                    size_t next_node_label = best_path[node_idx + 1];
-
-                    // Accumulating sum of vertex
-                    curr_group_average_x += vertx[node_label];
-                    curr_group_average_y += verty[node_label];
-
-                    // Found seperated group
-                    // If the group was found, and the size of group is large enough, then running
-                    if (path_solver.get_cost_between(node_label, next_node_label) > threshold || node_idx == best_path_size - 2)
-                    {
-                        group_feature_last_idx = node_idx;
-                        size_t group_size = group_feature_last_idx - group_feature_first_idx + 1;
-                        // Filtering total sub group with at least 3 points per group
-                        if (group_size >= 3)
-                        {
-                            // Save group range
-                            feature_groups.push_back(pair<size_t, size_t>(group_feature_first_idx, group_feature_last_idx));
-
-                            // Calculating Centroid
-                            curr_group_average_x /= group_size;
-                            curr_group_average_y /= group_size;
-
-                            // Calculate Compactness
-                            float current_group_compactness = 0.0f;
-                            for (size_t group_node_idx = group_feature_first_idx; group_node_idx < group_feature_last_idx; group_node_idx++)
-                            {
-                                // Calculating square_distance to centroid
-                                size_t group_node_label = best_path[group_node_idx];
-                                float square_dist = (vertx[group_node_label] - curr_group_average_x) * (vertx[group_node_label] - curr_group_average_x) +
-                                                    (verty[group_node_label] - curr_group_average_y) * (verty[group_node_label] - curr_group_average_y);
-
-                                // Sum of square distance
-                                current_group_compactness += square_dist;
-                            }
-                            // Compactness = Sum(d^2) / n
-                            current_group_compactness /= group_size;
-
-                            // Accumulating total compactness
-                            total_average_compactness += current_group_compactness;
-
-                            // Visualize group and centriod
-                            Point2f pcentroid(curr_group_average_x * 1000, curr_group_average_y * 1000);
-                            for (size_t group_node_idx = group_feature_first_idx; group_node_idx <= group_feature_last_idx; group_node_idx++)
-                            {
-                                size_t node_idx = best_path[group_node_idx];
-                                Point2f pstart(vertx[node_idx] * 1000, verty[node_idx] * 1000);
-
-                                // Point-and-centroid
-                                line(group_img_out, pstart, pcentroid, Scalar(0, 0, 255), 1, CV_AA);
-                                circle(group_img_out, pstart, 0, Scalar(0, 255, 0), 2, CV_AA);
-                            }
-                            circle(group_img_out, pcentroid, 0, Scalar(255, 0, 0), 2, CV_AA);
-                        }
-                        // Rollnext
-                        group_feature_first_idx = group_feature_last_idx + 1;
-
-                        // Reset temperature variable
-                        curr_group_average_x = 0;
-                        curr_group_average_y = 0;
-                    }
-                }
-                // Calculating average compactness
-                if (feature_groups.size() > 0)
-                    total_average_compactness /= feature_groups.size();
-                else
-                    total_average_compactness = 0.0f;
-
-                /*stringstream path_out;
-                path_out << "/home/stylix/webstylix/code/ins_online/out_test/group_img_out_" << bow_id << "_" << pcut << "_lnj.png";
-                cout << "Write out image.."; cout.flush();
-                imwrite(path_out.str(), group_img_out);
-                cout << "done" << endl;*/
-
-                Mat test_img_out(1000, 1000, CV_8UC3, Scalar(0));
-
-                // Draw line
-                for (size_t point_idx = 0; point_idx < total_feature_pass_count - 1; point_idx++)
-                {
-                    size_t node_idx = best_path[point_idx];
-                    size_t next_node_idx = best_path[point_idx + 1];
-
-                    Point2i pstart(vertx[node_idx] * 1000, verty[node_idx] * 1000);
-                    Point2i pend(vertx[next_node_idx] * 1000, verty[next_node_idx] * 1000);
-
-                    // Draw line only pass threshold
-                    if (path_solver.get_cost_between(node_idx, next_node_idx) <= threshold)
-                        line(test_img_out, pstart, pend, Scalar(0, 0, 255), 1, CV_AA);
-
-                    circle(test_img_out, pstart, 0, Scalar(0, 255, 0), 2, CV_AA);
-                    if (point_idx == total_feature_pass_count - 2)
-                        circle(test_img_out, pend, 0, Scalar(0, 255, 0), 2, CV_AA);
-                }
-
-                /*stringstream path2_out;
-                path2_out << "/home/stylix/webstylix/code/ins_online/out_test/group_img_out_" << bow_id << "_" << pcut << "_lnj_p.png";
-                cout << "Write out image.."; cout.flush();
-                imwrite(path2_out.str(), test_img_out);
-                cout << "done" << endl;*/
-
-                // Release mem
-                delete[] vertx;
-                delete[] verty;
-                delete[] symmat_dist;
-
-                // Save Compactness for finding best minsup later
-                if (bow_id + 1 > compactness.size())
-                {
-                    vector<float> sub_compactness;
-                    sub_compactness.push_back(total_average_compactness);
-                    compactness.push_back(sub_compactness);
-                }
-                else
-                    compactness[bow_id].push_back(total_average_compactness);
-            }
-            // Print out compactness
-            pass_pcut << total_average_compactness << ",";
-        }
-        // pass one cut, continue next cut
-        pass_pcut << endl;
-    }
-
-
-    // Compactness Debug
-    cout << setprecision(5) << fixed;
-    for (size_t bow_id = 0; bow_id < compactness.size(); bow_id++)
-    {
-        for (size_t cut_id = 0; cut_id < compactness[bow_id].size(); cut_id++)
-        {
-            cout << compactness[bow_id][cut_id] << " ";
-        }
-        cout << endl;
-    }
-
-    /// Finding best p_cut for each rank_id
-    vector<size_t> good_pcut;
-    for (size_t bow_id = 0; bow_id < compactness.size(); bow_id++)
-    {
-        // Find average compactness for all pcut
-        float average_compactness = 0.0f;
-        size_t pcut_count = 0;
-        for (size_t pcut_id = 0; pcut_id < compactness[bow_id].size(); pcut_id++)
-        {
-            if (compactness[bow_id][pcut_id] > 0.0f)
-            {
-                average_compactness += compactness[bow_id][pcut_id];
-                pcut_count++;
-            }
-        }
-        average_compactness /= pcut_count;
-
-        // Find first pcut below average_compactness
-        for (size_t pcut_id = 0; pcut_id < compactness[bow_id].size(); pcut_id++)
-        {
-            if (compactness[bow_id][pcut_id] < average_compactness)
-            {
-                good_pcut.push_back(pcut_id);
-                break;
-            }
-        }
-    }
-
-    // Debut best_pcut
-    cout << "Debug good pcut: ";
-    for (size_t pcut_id = 0; pcut_id < good_pcut.size(); pcut_id++)
-        cout << good_pcut[pcut_id] << " ";
-    cout << endl;
-
-
-    // Calculate item weight from ACW
-    frequent_item_count.clear();
-    frequent_item_weight.clear();
-    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-    {
-        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-        {
-            size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-            // Skip if not fall within query
-            //if (!query_bin_mask[cluster_id])
-                //continue;
-
-            if (frequent_item_count.find(cluster_id) == frequent_item_count.end())
-            {
-                frequent_item_count[cluster_id] = 0;
-                frequent_item_weight[cluster_id] = 0;
-            }
-            frequent_item_count[cluster_id]++;
-            frequent_item_weight[cluster_id]++;
-        }
-    }
-    // Find max
-    item_count_max = 0;
-    //unordered_map<size_t, size_t>::iterator frequent_item_count_it;
-    for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
-    {
-        if (item_count_max < frequent_item_count_it->second)
-            item_count_max = frequent_item_count_it->second;
-    }
-
-    // Cut
-    bool* auto_minsup_filter = new bool[run_param.CLUSTER_SIZE];
-    for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
-        auto_minsup_filter[cluster_id] = false;
-    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-    {
-        bin_pass = 0;
-        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-        {
-            size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-            // Skip if not fall within query
-            //if (!query_bin_mask[cluster_id])
-                //continue;
-
-            auto_minsup_filter[cluster_id] |= float(frequent_item_count[cluster_id]) / item_count_max >= ((good_pcut[bow_id] + 6) * pcut_step) / 100.0f;
-        }
-    }
-
-    // Normalize and filtering
-    unordered_map<size_t, float>::iterator frequent_item_weight_it;
-    for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
-    {
-        frequent_item_weight_it->second /= item_count_max;          // normalize by max of cluster_frequency
-        if (!auto_minsup_filter[frequent_item_weight_it->first])    // If auto minsup is false -> not pass
-            frequent_item_weight_it->second = 0;                    // not pass minsup, set zero
-    }
-    frequent_item_weight.swap(fi_weight);
-
-    // Write to file
-    text_write(query_path + "_rankcut.csv", pass_pcut.str(), false);
-
-    // Release memory
-    delete[] query_bin_mask;
-    delete[] auto_minsup_filter;
-}
-
-void ACW(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight)
-{
-    bool* query_bin_mask = new bool[run_param.CLUSTER_SIZE];        // cluster_id, flag
-    for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
-        query_bin_mask[cluster_id] = false;
-    for (size_t bin_id = 0; bin_id < query_bow.size(); bin_id++)
-        query_bin_mask[query_bow[bin_id].cluster_id] = true;
-
-    // Calculate item weight from ACW
-    unordered_map<size_t, size_t> frequent_item_count;      // cluster_id, count
-    unordered_map<size_t, float> frequent_item_weight;      // cluster_id, weight
-    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-    {
-        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-        {
-            size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-            // Skip if not fall within query
-            //if (!query_bin_mask[cluster_id])
-                //continue;
-
-            if (frequent_item_count.find(cluster_id) == frequent_item_count.end())
-            {
-                frequent_item_count[cluster_id] = 0;
-                frequent_item_weight[cluster_id] = 0;
-            }
-            frequent_item_count[cluster_id]++;
-            frequent_item_weight[cluster_id]++;
-        }
-    }
-    // Find max
-    size_t item_count_max = 0;
-    unordered_map<size_t, size_t>::iterator frequent_item_count_it;
-    for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
-    {
-        if (item_count_max < frequent_item_count_it->second)
-            item_count_max = frequent_item_count_it->second;
-    }
-
-    // Normalize and filtering
-    unordered_map<size_t, float>::iterator frequent_item_weight_it;
-    for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
-    {
-        frequent_item_weight_it->second /= item_count_max;  // normalize
-        if (frequent_item_weight_it->second < minsup / 100.0f)
-            frequent_item_weight_it->second = 0;            // not pass minsup, set zero
-    }
-    frequent_item_weight.swap(fi_weight);
-}
-
-void QE_AVG(const string& query_path, vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight)
-{
-    bool* query_bin_mask = new bool[run_param.CLUSTER_SIZE];        // cluster_id, flag
-    for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
-        query_bin_mask[cluster_id] = false;
-    for (size_t bin_id = 0; bin_id < query_bow.size(); bin_id++)
-        query_bin_mask[query_bow[bin_id].cluster_id] = true;
-
-
-    // Skip if not fall within query
-    //if (!query_bin_mask[cluster_id])
-        //continue;
-
-
-    // Clear old bow
-    for (size_t bin_id = 0; bin_id < query_bow.size(); bin_id++)
-        query_bow[bin_id].features.clear();
-    query_bow.clear();
-
-    // Initialize blank sparse bow
-    unordered_map<size_t, float> frequent_item_weight;
-    unordered_map<size_t, vector<feature_object> > curr_sparse_bow; // cluster_id, features
-    mask_pass = 0;
-    // Set bow
-    // Add feature to curr_sparse_bow at cluster_id
-    // Frequency of bow is curr_sparse_bow[].size()
-    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-    {
-        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-        {
-            // Get cluster from quantizad index of feature
-            size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
-
-            for (size_t feature_id = 0; feature_id < bow_sig_pack[bow_id][bin_id].features.size(); feature_id++)
-                // Keep new feature into its corresponding bin (cluster_id)
-                curr_sparse_bow[cluster_id].push_back(bow_sig_pack[bow_id][bin_id].features[feature_id]);
-
-            if (frequent_item_weight.find(cluster_id) == frequent_item_weight.end())
-                frequent_item_weight[cluster_id] = 0;
-            frequent_item_weight[cluster_id] += bow_sig_pack[bow_id][bin_id].features.size();
-        }
-    }
-
-    /// Make compact bow, with tf-idf frequency
-    for (unordered_map<size_t, vector<feature_object> >::iterator sparse_bow_it = curr_sparse_bow.begin(); sparse_bow_it != curr_sparse_bow.end(); sparse_bow_it++)
-    {
-        // Looking for non-zero bin of cluster,
-        // then put that bin together with specified cluster_id
-        // Create new bin with cluster_id, frequency, and its features
-        bow_bin_object bow_bin;
-        bow_bin.cluster_id = sparse_bow_it->first;
-
-        // Feature weight acculumating
-        float feature_weight = 0.0f;
-        for (size_t feature_id = 0; feature_id < sparse_bow_it->second.size(); feature_id++)
-            feature_weight += sparse_bow_it->second[feature_id].weight;
-
-        // tf-idf
-        if ((int)feature_weight > 0)
-            feature_weight = (1 + log10(feature_weight)) * inverted_hist.get_idf(bow_bin.cluster_id); // tf*idf = log10(feature_weight) * idf[cluster_id]
-        else
-            continue;   // Skip adding to bow
-
-        // Average QE
-        frequent_item_weight[bow_bin.cluster_id] = 1;
-        bow_bin.freq = feature_weight / bow_sig_pack.size();
-        bow_bin.features.swap(sparse_bow_it->second);
-
-        // Keep new bin into compact_bow
-        query_bow.push_back(bow_bin);
-    }
-
-    /// Normalization
-    // Unit length
-    float sum_of_square = 0.0f;
-    float unit_length = 0.0f;
-    for (size_t bin_idx = 0; bin_idx < query_bow.size(); bin_idx++)
-        sum_of_square += query_bow[bin_idx].freq * query_bow[bin_idx].freq;
-    unit_length = sqrt(sum_of_square);
-
-    // Normalizing
-    for (size_t bin_idx = 0; bin_idx < query_bow.size(); bin_idx++)
-        query_bow[bin_idx].freq = query_bow[bin_idx].freq / unit_length;
-
-    // Keep weight
-    fi_weight.swap(frequent_item_weight);
-}
-
-void SIW(const string& query_path, int minsup, unordered_map<size_t, float>& fi_weight)
-{
-    // Ref http://www.borgelt.net/apriori.html
-    // Ref http://www.borgelt.net/fpgrowth.html
-    string frequent_item_path = query_path + "_qb2_frequent_item.txt";
-    /// Step 3
-    // Calculate item weight from FIM
-    // FIM to FIW
-    unordered_map<size_t, size_t> frequent_item_count;
-    unordered_map<size_t, float> frequent_item_weight;
-    vector<string> frequent_item_sets = text_readline2vector(frequent_item_path);
-    for (size_t set_id = 0; set_id < frequent_item_sets.size(); set_id++)
-    {
-        // Accumulate support score for each item
-        const char* delimsItem = " ";
-        vector<string> Items;   // Item [0-(n-2)], Support [n-1]
-        string_splitter(frequent_item_sets[set_id], delimsItem, Items);
-
-        for (size_t item_idx = 0; item_idx < Items.size(); item_idx++)
-        {
-            size_t item = strtoull(Items[item_idx].c_str(), NULL, 0);
-            if (frequent_item_weight.find(item) == frequent_item_weight.end())
-            {
-                frequent_item_count[item] = 0;
-                frequent_item_weight[item] = 0;
-            }
-            frequent_item_count[item]++;
-            frequent_item_weight[item] = frequent_item_count[item];
-        }
-    }
-    // Find max
-    size_t item_count_max = 0;
-    unordered_map<size_t, size_t>::iterator frequent_item_count_it;
-    for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
-    {
-        if (item_count_max < frequent_item_count_it->second)
-            item_count_max = frequent_item_count_it->second;
-    }
-    // Normalize and filtering
-    unordered_map<size_t, float>::iterator frequent_item_weight_it;
-    for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
-    {
-        frequent_item_weight_it->second /= item_count_max;  // normalize
-        if (frequent_item_weight_it->second < minsup / 100.0)
-            frequent_item_weight_it->second = 0;            // not pass minsup, set zero
-    }
-    frequent_item_weight.swap(fi_weight);
-}
-
-void FIW(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight)
-{
-    // Ref http://www.borgelt.net/apriori.html
-    // Ref http://www.borgelt.net/fpgrowth.html
-    string transaction_path = query_path + "_qb2_transaction.txt";
-    string frequent_item_path = query_path + "_qb2_frequent_item.txt";
-    string fpg_binary = "timeout -k 0h 2m /home/stylix/webstylix/code/datamining/fpgrowth";
-
-    /// Step 1
-    // Convert BOW to transaction
-    stringstream transaction_buffer;
-    bool with_query = false;
-    if (with_query)
-    {
-        for (size_t bin_id = 0; bin_id < query_bow.size(); bin_id++)
-            transaction_buffer << query_bow[bin_id].cluster_id << " ";
-        transaction_buffer << endl;
-    }
-    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
-    {
-        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
-            transaction_buffer << bow_sig_pack[bow_id][bin_id].cluster_id << " ";
-        transaction_buffer << endl;
-    }
-    text_write(transaction_path, transaction_buffer.str(), false);
-
-    /// Step 2
-    // Find Frequent Item Set by FP-growth
-    // output item set foprmat a,d,b:80
-    // -tm = maximal
-    // -k, output seperator
-    // -v, support value seperator
-    // -s lowerbound support value
-    string fpg_cmd = fpg_binary + " -tc -k, -v,%S%% -s" + toString(minsup) + " " + transaction_path + " " + frequent_item_path;// + COUT2NULL;
-    exec(fpg_cmd);
-    /// Step 3
-    // Calculate item weight from FIM
-    // FIM to FIW
-    unordered_map<size_t, size_t> frequent_item_count;
-    unordered_map<size_t, float> frequent_item_weight;
-    vector<string> frequent_item_sets = text_readline2vector(frequent_item_path);
-    float fim_support;
-    for (size_t set_id = 0; set_id < frequent_item_sets.size(); set_id++)
-    {
-        // Accumulate support score for each item
-        const char* delimsItem = ",";
-        vector<string> Items;   // Item [0-(n-2)], Support [n-1]
-        string_splitter(frequent_item_sets[set_id], delimsItem, Items);
-
-        // Skip last fim if fpgrowth killed detected
-        if (!str_contains(Items[Items.size() - 1], "%"))
-        {
-            cout << "Skip last frequent item set caused by killed!" << endl;
-            cout << "FIM output not yet done, but memory not enough!!" << endl;
-            break;
-        }
-
-        fim_support = atoi(str_replace_last(Items[Items.size() - 1], "%", "").c_str()) * 0.01;  // convert to 0-1 scale
-        for (size_t item_idx = 0; item_idx < Items.size() - 1; item_idx++)
-        {
-            size_t item = strtoull(Items[item_idx].c_str(), NULL, 0);
-            if (frequent_item_weight.find(item) == frequent_item_weight.end())
-            {
-                frequent_item_count[item] = 0;
-                frequent_item_weight[item] = 0;
-            }
-            frequent_item_count[item]++;
-            frequent_item_weight[item] += fim_support;
-        }
-    }
-    for (unordered_map<size_t, size_t>::iterator frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
-    {
-        // Normalize support score by number of occurance
-        size_t item = frequent_item_count_it->first;
-        //cout << "item: " << item << "   raw_weight: " << frequent_item_weight[item] << "    norm_weight: ";
-        frequent_item_weight[item] /= frequent_item_count[item];
-        //cout << frequent_item_weight[item] << " count: " << frequent_item_count[item] << endl;
-    }
-    frequent_item_weight.swap(fi_weight);
-}
-
-void QE_AVG(vector<bow_bin_object>& bow)
-{
-	cout << "==== QE_AVG ====" << endl;
-    // Search
-    cout << "Searching.."; cout.flush();
-    startTime = CurrentPreciseTime();
-    search_by_bow_sig(bow);
-    cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
-
-    // Step 3, Matching bow with top rank, Filtering the same cluster_id between query and top results
-    cout << "Filtering.."; cout.flush();
-    int* active_bow = new int[run_param.CLUSTER_SIZE];
-    for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)      // Empty active_bow
-        active_bow[cluster_id] = 0;
-
-    // Matching cluster_id
-    size_t max_rank_check = run_param.query_bootstrap_rankcheck;
-    if (max_rank_check > Result.size())
-        max_rank_check = Result.size();
-    for (size_t rank_id = 0; rank_id < max_rank_check; rank_id++)
-    {
-        vector<bow_bin_object> bow_result;
-        size_t dataset_id = Result[rank_id].first;
-        LoadSpecificBow(dataset_id, bow_result);
-
-        for (size_t bin_id = 0; bin_id < bow_result.size(); bin_id++)
-        {
-            size_t cluster_id = bow_result[bin_id].cluster_id;
-            if (run_param.query_bootstrap_minbow_type == MIN_BIN)
-                active_bow[cluster_id]++;                                       // accumulate by bin
-            else
-                active_bow[cluster_id] += bow_result[bin_id].features.size();   // accumulate by feature size
-        }
-    }
-
-    // Filtering by min_bow_thre
-    vector<bow_bin_object> ret_bow;
-    int min_bow_thre = run_param.query_bootstrap_minbow;
-    for (size_t bin_id = 0; bin_id < bow.size(); bin_id++)
-    {
-        size_t cluster_id = bow[bin_id].cluster_id;
-        if (active_bow[cluster_id] >= min_bow_thre)
-            ret_bow.push_back(bow[bin_id]);
-    }
-    cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
-
-    cout << "Bow in " << bow.size() << " bin(s)." << endl;
-    cout << "Bow out " << ret_bow.size() << " bin(s)." << endl;
-
-    // Swap
-    ret_bow.swap(bow);
-
-    delete[] active_bow;
-}
 
 void QB1_Bow(vector<bow_bin_object>& bow)
 {
@@ -2205,89 +901,6 @@ void QB1_Bow(vector<bow_bin_object>& bow)
     ret_bow.swap(bow);
 
     delete[] active_bow;
-}
-
-void DirectQuery(const string& query_path)
-{
-	// Resize image
-	string query_scaled_path = query_path;
-    if (run_param.query_scale_enable)
-        query_scaled_path = ResizeQuery(query_path);
-
-    // Pack query list
-    vector<string> queries;
-    queries.push_back(query_scaled_path);
-
-    // Request extract hist
-    vector<bow_bin_object> bow_hist;
-    cout << "Extracting BOW histogram.."; cout.flush();
-    startTime = CurrentPreciseTime();
-    extract_hist(simulated_session, queries, bow_hist);
-    extractTime = TimeElapse(startTime);
-    cout << "done! (in " << setprecision(2) << fixed << extractTime << " s)" << endl;
-
-	if (int(bow_hist.size()) < 4)
-    {
-        cout << "Too small query or no feature can be extracted!" << endl;
-        cout << "Switched to original query..." << endl;
-
-        // Pack query list
-        queries.clear();
-        queries.push_back(query_path);
-
-        // Request extract hist
-        cout << "Extracting BOW histogram.."; cout.flush();
-        startTime = CurrentPreciseTime();
-        extract_hist(simulated_session, queries, bow_hist);
-        extractTime = TimeElapse(startTime);
-        cout << "done! (in " << setprecision(2) << fixed << extractTime << " s)" << endl;
-    }
-
-    // MAP report bin size
-    map_push_report(toString(bow_hist.size()) + ",");
-    cout << "Bin amount: " << bow_hist.size() << " bins" << endl;
-
-    // MAP report num_kp
-    map_push_report(toString(num_kp) + ",");
-    cout << "Total feature(s): " << num_kp << " point(s)" << endl;
-
-    // MAP report mask_pass
-    map_push_report(toString(mask_pass) + ",");
-    cout << "Mask passed: " << mask_pass << " point(s)" << endl;
-
-    // Search matching visualization
-    bool is_dump = false;
-    if (is_dump)
-        inverted_hist.start_matching_dump(run_param.dataset_root_dir, ImgParentPaths, ImgParentsIdx, ImgLists, vector<size_t>(), query_scaled_path);
-
-    // Search
-    cout << "==== Search Timing Info ====" << endl;
-    startTime = CurrentPreciseTime();
-    result_id = search_by_bow_sig(bow_hist);
-    searchTime = TimeElapse(startTime);
-    cout << "Match with: " << TotalMatch << " videos" << endl;
-    cout << "Search time: " <<  searchTime << " s" << endl;
-    cout << "Result (dataset_id) : " << result_id << endl;
-
-    // Stop matching dump
-    if (is_dump)
-        inverted_hist.stop_matching_dump();
-
-    // MAP report number of matched dataset
-    map_push_report(toString(TotalMatch) + ",");
-
-    // MAP report extractTime
-    map_push_report(toString(extractTime) + ",");
-
-    // MAP report search time usage
-    map_push_report(toString(searchTime) + ",");
-
-    ExportEvalRank(query_scaled_path);
-
-    ExportRawRank(query_path);
-
-    // Release memory
-    bow_hist.clear();
 }
 
 void QueryBootstrapping_v1(const string& query_path)
@@ -3079,7 +1692,7 @@ void QueryBootstrapping_v2(const string& query_path)
         bootstrap_bow_mask[bootstrap_bow_hist[bin_id].cluster_id] = true;
 
     // Matching cluster_id
-    size_t max_rank_check = run_param.query_bootstrap_rankcheck;
+    size_t max_rank_check = run_param.qbmining_topk;
     if (max_rank_check > Result.size())
         max_rank_check = Result.size();
 
@@ -3140,12 +1753,20 @@ void QueryBootstrapping_v2(const string& query_path)
     // QB Mining
     unordered_map<size_t, float> fi_weight;
     if (run_param.qbmining_enable)
-        //FIW(query_path, bootstrap_bow_hist, top_bow_sig, run_param.qbmining_minsup, fi_weight);
-        AUTOW_SD(query_path, bootstrap_bow_hist, top_bow_sig, run_param.qbmining_minsup, fi_weight);
-        //AUTOW_COMPACTNESS(query_path, bootstrap_bow_hist, top_bow_sig, run_param.qbmining_minsup, fi_weight);
-        //ACW(query_path, bootstrap_bow_hist, top_bow_sig, run_param.qbmining_minsup, fi_weight);
-        //SIW(query_path, run_param.qbmining_minsup, fi_weight);
-        //QE_AVG(query_path, bootstrap_bow_hist, top_bow_sig, run_param.qbmining_minsup, fi_weight);
+    {
+        if (run_param.qbmining_mode == QB_FIW)
+            FIW(query_path, bootstrap_bow_hist, top_bow_sig, run_param.qbmining_minsup, fi_weight);
+        else if (run_param.qbmining_mode == QB_PREFIW)
+            PREFIW(query_path, run_param.qbmining_minsup, fi_weight);
+        else if (run_param.qbmining_mode == QB_GLOSD)
+            GLOSD(query_path, bootstrap_bow_hist, top_bow_sig, run_param.qbmining_minsup, fi_weight);
+        else if (run_param.qbmining_mode == QB_LOCSD)
+            LOCSD(query_path, bootstrap_bow_hist, top_bow_sig, run_param.qbmining_minsup, fi_weight);
+        else if (run_param.qbmining_mode == QB_FIX)
+            FIX(query_path, bootstrap_bow_hist, top_bow_sig, run_param.qbmining_minsup, fi_weight);
+        else if (run_param.qbmining_mode == QB_QEAVG)
+            QE_AVG(query_path, bootstrap_bow_hist, top_bow_sig, run_param.qbmining_minsup, fi_weight);
+    }
 
     // Matching Dump for QB_Mining
     if (run_param.qbmining_enable && is_dump)
@@ -3386,6 +2007,1256 @@ void QueryBootstrapping_v2(const string& query_path)
     delete[] active_bow;
 }
 
+void FIW(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight)
+{
+    // Ref http://www.borgelt.net/apriori.html
+    // Ref http://www.borgelt.net/fpgrowth.html
+    string transaction_path = query_path + "_qb2_transaction.txt";
+    string frequent_item_path = query_path + "_qb2_frequent_item.txt";
+    string fpg_binary = "timeout -k 0h 2m /home/stylix/webstylix/code/datamining/fpgrowth";
+
+    /// Step 1
+    // Convert BOW to transaction
+    stringstream transaction_buffer;
+    bool with_query = false;
+    if (with_query)
+    {
+        for (size_t bin_id = 0; bin_id < query_bow.size(); bin_id++)
+            transaction_buffer << query_bow[bin_id].cluster_id << " ";
+        transaction_buffer << endl;
+    }
+    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+    {
+        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+            transaction_buffer << bow_sig_pack[bow_id][bin_id].cluster_id << " ";
+        transaction_buffer << endl;
+    }
+    text_write(transaction_path, transaction_buffer.str(), false);
+
+    /// Step 2
+    // Find Frequent Item Set by FP-growth
+    // output item set foprmat a,d,b:80
+    // -tm = maximal
+    // -k, output seperator
+    // -v, support value seperator
+    // -s lowerbound support value
+    string fpg_cmd = fpg_binary + " -tc -k, -v,%S%% -s" + toString(minsup) + " " + transaction_path + " " + frequent_item_path;// + COUT2NULL;
+    exec(fpg_cmd);
+    /// Step 3
+    // Calculate item weight from FIM
+    // FIM to FIW
+    unordered_map<size_t, size_t> frequent_item_count;
+    unordered_map<size_t, float> frequent_item_weight;
+    vector<string> frequent_item_sets = text_readline2vector(frequent_item_path);
+    float fim_support;
+    for (size_t set_id = 0; set_id < frequent_item_sets.size(); set_id++)
+    {
+        // Accumulate support score for each item
+        const char* delimsItem = ",";
+        vector<string> Items;   // Item [0-(n-2)], Support [n-1]
+        string_splitter(frequent_item_sets[set_id], delimsItem, Items);
+
+        // Skip last fim if fpgrowth killed detected
+        if (!str_contains(Items[Items.size() - 1], "%"))
+        {
+            cout << "Skip last frequent item set caused by killed!" << endl;
+            cout << "FIM output not yet done, but memory not enough!!" << endl;
+            break;
+        }
+
+        fim_support = atoi(str_replace_last(Items[Items.size() - 1], "%", "").c_str()) * 0.01;  // convert to 0-1 scale
+        for (size_t item_idx = 0; item_idx < Items.size() - 1; item_idx++)
+        {
+            size_t item = strtoull(Items[item_idx].c_str(), NULL, 0);
+            if (frequent_item_weight.find(item) == frequent_item_weight.end())
+            {
+                frequent_item_count[item] = 0;
+                frequent_item_weight[item] = 0;
+            }
+            frequent_item_count[item]++;
+            frequent_item_weight[item] += fim_support;
+        }
+    }
+    for (unordered_map<size_t, size_t>::iterator frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
+    {
+        // Normalize support score by number of occurance
+        size_t item = frequent_item_count_it->first;
+        //cout << "item: " << item << "   raw_weight: " << frequent_item_weight[item] << "    norm_weight: ";
+        frequent_item_weight[item] /= frequent_item_count[item];
+        //cout << frequent_item_weight[item] << " count: " << frequent_item_count[item] << endl;
+    }
+    frequent_item_weight.swap(fi_weight);
+}
+
+void PREFIW(const string& query_path, int minsup, unordered_map<size_t, float>& fi_weight)
+{
+    // Ref http://www.borgelt.net/apriori.html
+    // Ref http://www.borgelt.net/fpgrowth.html
+    string frequent_item_path = query_path + "_qb2_frequent_item.txt";
+    /// Step 3
+    // Calculate item weight from FIM
+    // FIM to FIW
+    unordered_map<size_t, size_t> frequent_item_count;
+    unordered_map<size_t, float> frequent_item_weight;
+    vector<string> frequent_item_sets = text_readline2vector(frequent_item_path);
+    for (size_t set_id = 0; set_id < frequent_item_sets.size(); set_id++)
+    {
+        // Accumulate support score for each item
+        const char* delimsItem = " ";
+        vector<string> Items;   // Item [0-(n-2)], Support [n-1]
+        string_splitter(frequent_item_sets[set_id], delimsItem, Items);
+
+        for (size_t item_idx = 0; item_idx < Items.size(); item_idx++)
+        {
+            size_t item = strtoull(Items[item_idx].c_str(), NULL, 0);
+            if (frequent_item_weight.find(item) == frequent_item_weight.end())
+            {
+                frequent_item_count[item] = 0;
+                frequent_item_weight[item] = 0;
+            }
+            frequent_item_count[item]++;
+            frequent_item_weight[item] = frequent_item_count[item];
+        }
+    }
+    // Find max
+    size_t item_count_max = 0;
+    unordered_map<size_t, size_t>::iterator frequent_item_count_it;
+    for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
+    {
+        if (item_count_max < frequent_item_count_it->second)
+            item_count_max = frequent_item_count_it->second;
+    }
+    // Normalize and filtering
+    unordered_map<size_t, float>::iterator frequent_item_weight_it;
+    for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
+    {
+        frequent_item_weight_it->second /= item_count_max;  // normalize
+        if (frequent_item_weight_it->second < minsup / 100.0)
+            frequent_item_weight_it->second = 0;            // not pass minsup, set zero
+    }
+    frequent_item_weight.swap(fi_weight);
+}
+
+void FIX(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight)
+{
+    bool* query_bin_mask = new bool[run_param.CLUSTER_SIZE];        // cluster_id, flag
+    for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
+        query_bin_mask[cluster_id] = false;
+    for (size_t bin_id = 0; bin_id < query_bow.size(); bin_id++)
+        query_bin_mask[query_bow[bin_id].cluster_id] = true;
+
+    // Calculate item weight from ACW
+    unordered_map<size_t, size_t> frequent_item_count;      // cluster_id, count
+    unordered_map<size_t, float> frequent_item_weight;      // cluster_id, weight
+    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+    {
+        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+        {
+            size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+            // Skip if not fall within query
+            //if (!query_bin_mask[cluster_id])
+                //continue;
+
+            if (frequent_item_count.find(cluster_id) == frequent_item_count.end())
+            {
+                frequent_item_count[cluster_id] = 0;
+                frequent_item_weight[cluster_id] = 0;
+            }
+            frequent_item_count[cluster_id]++;
+            frequent_item_weight[cluster_id]++;
+        }
+    }
+    // Find max
+    size_t item_count_max = 0;
+    unordered_map<size_t, size_t>::iterator frequent_item_count_it;
+    for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
+    {
+        if (item_count_max < frequent_item_count_it->second)
+            item_count_max = frequent_item_count_it->second;
+    }
+
+    // Normalize and filtering
+    unordered_map<size_t, float>::iterator frequent_item_weight_it;
+    for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
+    {
+        frequent_item_weight_it->second /= item_count_max;  // normalize
+        if (frequent_item_weight_it->second < minsup / 100.0f)
+            frequent_item_weight_it->second = 0;            // not pass minsup, set zero
+    }
+    frequent_item_weight.swap(fi_weight);
+}
+
+void GLOSD(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight)
+{
+    bool* query_bin_mask = new bool[run_param.CLUSTER_SIZE];        // cluster_id, flag
+    for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
+        query_bin_mask[cluster_id] = false;
+    for (size_t bin_id = 0; bin_id < query_bow.size(); bin_id++)
+        query_bin_mask[query_bow[bin_id].cluster_id] = true;
+
+    // Calculate count for each class
+    unordered_map<size_t, size_t> frequent_item_count;      // cluster_id, count
+    unordered_map<size_t, float> frequent_item_weight;      // cluster_id, weight
+    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+    {
+        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+        {
+            size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+            // Skip if not fall within query
+            //if (!query_bin_mask[cluster_id])
+                //continue;
+
+            if (frequent_item_count.find(cluster_id) == frequent_item_count.end())
+            {
+                frequent_item_count[cluster_id] = 0;
+                frequent_item_weight[cluster_id] = 0;
+            }
+            frequent_item_count[cluster_id]++;
+            frequent_item_weight[cluster_id]++;
+        }
+    }
+    // Find max
+    size_t item_count_max = 0;
+    unordered_map<size_t, size_t>::iterator frequent_item_count_it;
+    for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
+    {
+        if (item_count_max < frequent_item_count_it->second)
+            item_count_max = frequent_item_count_it->second;
+    }
+
+/*
+    // Normalize and filtering
+    unordered_map<size_t, float>::iterator frequent_item_weight_it;
+    for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
+    {
+        frequent_item_weight_it->second /= item_count_max;  // normalize
+        if (frequent_item_weight_it->second < minsup / 100.0f)
+            frequent_item_weight_it->second = 0;            // not pass minsup, set zero
+    }
+    frequent_item_weight.swap(fi_weight);
+*/
+
+
+    /// Cut test
+    stringstream pass_pcut;
+    int bin_pass;
+    // Write rank_id
+    pass_pcut << "rank_id,";
+    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+        pass_pcut << bow_id << ",";
+    pass_pcut << "all_bin" << endl;
+    // Write total bin
+    pass_pcut << "total_bin,";
+    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+        pass_pcut << bow_sig_pack[bow_id].size() << ",";
+    pass_pcut << frequent_item_count.size() << endl;
+
+    // Write cut for each rank
+    // pcut is percentage
+    vector< vector<float> > total_sd;
+    int pcut_step = 5;
+    for (int pcut = pcut_step; pcut <= 100; pcut += pcut_step)
+    {
+        pass_pcut << pcut << ",";
+        /// -- Pass test
+        unordered_map<size_t, size_t> bin_pass_count;       // cluster_id, pass_count
+        unordered_map<size_t, bool> bin_pass_mask;          // cluster_id, pass_flag
+        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+        {
+            bin_pass = 0;
+            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+            {
+                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+                // Skip if not fall within query
+                //if (!query_bin_mask[cluster_id])
+                    //continue;
+
+                bool pass_cut = float(frequent_item_count[cluster_id]) / item_count_max >= pcut / 100.0f;
+
+                if (pass_cut)
+                {
+                    if (bin_pass_count.find(cluster_id) == bin_pass_count.end())
+                        bin_pass_count[cluster_id] = 0;
+                    bin_pass_count[cluster_id]++;
+                    bin_pass++; // bin pass without mask
+                    bin_pass_mask[cluster_id] = pass_cut;
+                }
+                else
+                    bin_pass_mask[cluster_id] |= pass_cut;
+            }
+            pass_pcut << bin_pass << ",";
+        }
+        pass_pcut << bin_pass_count.size() << ",";
+
+        /// -- Compactness test
+        // compactness : It is the sum of squared distance from each point to their corresponding centers.
+        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+        {
+            size_t total_feature_pass_count = 0;
+
+            // Accumulate total feature pass count
+            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+            {
+                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+                // Skip if not fall within query
+                //if (!query_bin_mask[cluster_id])
+                    //continue;
+
+                if (bin_pass_mask[cluster_id])
+                    total_feature_pass_count += bow_sig_pack[bow_id][bin_id].features.size();
+            }
+
+            // Continue finding SD if we have vertex pass p_cut more than 3 points
+            // 1. Finding centroid
+            // 2. Packing distance to data, then get mean
+            // 3. Calc SD by sd_with_premean
+
+            float rank_sd = 0.0f;
+            if (total_feature_pass_count > 3)
+            {
+                size_t vert_count = 0;
+                float* vertx = new float[total_feature_pass_count];
+                float* verty = new float[total_feature_pass_count];
+                float rank_centroid[2] = {0.0f, 0.0f};                                      // Centroid for this rank
+                float* rank_dist_to_centroid = new float[total_feature_pass_count];
+                float rank_dist_mean = 0.0f;
+
+                // 1. Finding centroid
+                for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+                {
+                    size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+                    // Skip if not fall within query
+                    //if (!query_bin_mask[cluster_id])
+                        //continue;
+
+                    if (bin_pass_mask[cluster_id])
+                    {
+                        for (size_t feature_id = 0; feature_id < bow_sig_pack[bow_id][bin_id].features.size(); feature_id++)
+                        {
+                            rank_centroid[0] += vertx[vert_count] = bow_sig_pack[bow_id][bin_id].features[feature_id].x;    // Accumulating centroid
+                            rank_centroid[1] += verty[vert_count] = bow_sig_pack[bow_id][bin_id].features[feature_id].y;
+                            vert_count++;
+                        }
+                    }
+                }
+                // Calculate centroid
+                rank_centroid[0] /= vert_count;
+                rank_centroid[1] /= vert_count;
+
+                // 2. Packing distance to data, then get mean
+                for (size_t vert_id = 0; vert_id < vert_count; vert_id++)
+                {
+                    rank_dist_to_centroid[vert_id] = sqrt((vertx[vert_id] - rank_centroid[0]) * (vertx[vert_id] - rank_centroid[0]) +
+                                                          (verty[vert_id] - rank_centroid[1]) * (verty[vert_id] - rank_centroid[1]));
+                    //cout << "Dist: " << rank_dist_to_centroid[vert_id] << endl;
+                    rank_dist_mean += rank_dist_to_centroid[vert_id];       // Accumulating mean
+                }
+                // Calculating mean
+                rank_dist_mean /= vert_count;
+
+
+                // 3. Calculate by SD_PREMEAN
+                rank_sd = calc_sd_premean(rank_dist_to_centroid, vert_count, rank_dist_mean);
+
+                /*stringstream path_out;
+                path_out << "/home/stylix/webstylix/code/ins_online/out_test/group_img_out_" << bow_id << "_" << pcut << "_lnj.png";
+                cout << "Write out image.."; cout.flush();
+                imwrite(path_out.str(), group_img_out);
+                cout << "done" << endl;*/
+
+                Mat test_img_out(1000, 1000, CV_8UC3, Scalar(0));
+
+/*
+                // Draw line
+                for (size_t point_idx = 0; point_idx < total_feature_pass_count - 1; point_idx++)
+                {
+                    size_t node_idx = best_path[point_idx];
+                    size_t next_node_idx = best_path[point_idx + 1];
+
+                    Point2i pstart(vertx[node_idx] * 1000, verty[node_idx] * 1000);
+                    Point2i pend(vertx[next_node_idx] * 1000, verty[next_node_idx] * 1000);
+
+                    // Draw line only pass threshold
+                    if (path_solver.get_cost_between(node_idx, next_node_idx) <= threshold)
+                        line(test_img_out, pstart, pend, Scalar(0, 0, 255), 1, CV_AA);
+
+                    circle(test_img_out, pstart, 0, Scalar(0, 255, 0), 2, CV_AA);
+                    if (point_idx == total_feature_pass_count - 2)
+                        circle(test_img_out, pend, 0, Scalar(0, 255, 0), 2, CV_AA);
+                }
+*/
+
+                /*stringstream path2_out;
+                path2_out << "/home/stylix/webstylix/code/ins_online/out_test/group_img_out_" << bow_id << "_" << pcut << "_lnj_p.png";
+                cout << "Write out image.."; cout.flush();
+                imwrite(path2_out.str(), test_img_out);
+                cout << "done" << endl;*/
+
+                // Release mem
+                delete[] vertx;
+                delete[] verty;
+                delete[] rank_dist_to_centroid;
+            }
+
+            // Save Compactness for finding best minsup later
+            if (bow_id + 1 > total_sd.size())
+            {
+                vector<float> sub_total_sd;
+                sub_total_sd.push_back(rank_sd);
+                total_sd.push_back(sub_total_sd);
+            }
+            else
+                total_sd[bow_id].push_back(rank_sd);
+
+            // Print out SD
+            pass_pcut << rank_sd << ",";
+        }
+        // pass one cut, continue next cut
+        pass_pcut << endl;
+    }
+
+    // Write to file
+    text_write(query_path + "_rankcut.csv", pass_pcut.str(), false);
+
+    // Total SD Debug
+    cout << setprecision(5) << fixed;
+    for (size_t bow_id = 0; bow_id < total_sd.size(); bow_id++)
+    {
+        for (size_t cut_id = 0; cut_id < total_sd[bow_id].size(); cut_id++)
+        {
+            cout << total_sd[bow_id][cut_id] << " ";
+        }
+        cout << endl;
+    }
+
+
+    if (true)
+    {
+        /// Finding the best p_cut for this top-k_rank
+        /*
+        Step to find the best pCut
+        1. Calculate abs-diff of sd for each top-k
+        2. Calculate avg of abs-diff from all top-k rank
+        3. Find abs-slope
+        4. Find lowest abs-slope is to find the highest stability of function
+        */
+
+        // 1-2 // Find avg-abs-diff for each sd_step
+        vector<float> avg_abs_diff_sd;
+        vector<size_t> avg_abs_diff_sd_label;
+        for (size_t pcut_id = 1; pcut_id < total_sd[0].size(); pcut_id++)
+        {
+            float curr_avg = 0.0f;
+            size_t non_zero_count = 0;
+            for (size_t bow_id = 0; bow_id < total_sd.size(); bow_id++)
+            {
+                float curr_diff = total_sd[bow_id][pcut_id - 1] - total_sd[bow_id][pcut_id];
+                if (curr_diff != 0)
+                {
+                    curr_avg += abs(curr_diff);
+                    non_zero_count++;
+                }
+            }
+            if (non_zero_count > 0)
+            {
+                avg_abs_diff_sd.push_back(curr_avg / non_zero_count);
+                avg_abs_diff_sd_label.push_back(pcut_id * pcut_step);     // pcut start from pcut_step 1
+            }
+        }
+        cout << "avg_abs_diff_sd_label.size() : " << avg_abs_diff_sd_label.size() << endl;
+        for (size_t avg_id = 0; avg_id < avg_abs_diff_sd_label.size(); avg_id++)
+            cout << avg_abs_diff_sd_label[avg_id] << "\t"; cout.flush();
+        cout << endl;
+        for (size_t avg_id = 0; avg_id < avg_abs_diff_sd.size(); avg_id++)
+            cout << avg_abs_diff_sd[avg_id] << "\t"; cout.flush();
+        cout << endl;
+
+        // 3 calc slope
+        vector<float> slope_avg_abs_diff_sd;
+        vector<size_t> slope_avg_abs_diff_sd_label;
+        if (avg_abs_diff_sd.size() >= 3)
+        {
+            //for (size_t diff_id = 2; diff_id < avg_abs_diff_sd.size() - 2; diff_id++)
+            for (size_t diff_id = 1; diff_id < avg_abs_diff_sd.size() - 1; diff_id++)
+            //for (size_t diff_id = 1; diff_id < avg_abs_diff_sd.size(); diff_id++)
+            {
+                // Packing data to find slope
+                /*float* x_data = new float[5];
+                float* y_data = new float[5];
+                x_data[0] = diff_id - 2;
+                x_data[1] = diff_id - 1;
+                x_data[2] = diff_id;
+                x_data[3] = diff_id + 1;
+                x_data[4] = diff_id + 2;
+                y_data[0] = avg_abs_diff_sd[diff_id - 2];
+                y_data[1] = avg_abs_diff_sd[diff_id - 1];
+                y_data[2] = avg_abs_diff_sd[diff_id];
+                y_data[3] = avg_abs_diff_sd[diff_id + 1];
+                y_data[4] = avg_abs_diff_sd[diff_id + 2];
+                */
+                float* x_data = new float[3];
+                float* y_data = new float[3];
+                x_data[0] = diff_id - 1;
+                x_data[1] = diff_id;
+                x_data[2] = diff_id + 1;
+                y_data[0] = avg_abs_diff_sd[diff_id - 1];
+                y_data[1] = avg_abs_diff_sd[diff_id];
+                y_data[2] = avg_abs_diff_sd[diff_id + 1];
+                /*float* x_data = new float[2];
+                float* y_data = new float[2];
+                x_data[0] = diff_id - 1;
+                x_data[1] = diff_id;
+                y_data[0] = avg_abs_diff_sd[diff_id - 1];
+                y_data[1] = avg_abs_diff_sd[diff_id];*/
+
+                //slope_avg_abs_diff_sd.push_back(abs(calc_slope(x_data, y_data, 5)));
+                slope_avg_abs_diff_sd.push_back(abs(calc_slope(x_data, y_data, 3)));
+                //slope_avg_abs_diff_sd.push_back(abs(calc_slope(x_data, y_data, 2)));
+                slope_avg_abs_diff_sd_label.push_back(avg_abs_diff_sd_label[diff_id]);
+
+                // Release memory
+                delete[] x_data;
+                delete[] y_data;
+            }
+        }
+        cout << "slope_avg_abs_diff_sd_label.size() : " << slope_avg_abs_diff_sd_label.size() << endl;
+        for (size_t slope_id = 0; slope_id < slope_avg_abs_diff_sd_label.size(); slope_id++)
+            cout << slope_avg_abs_diff_sd_label[slope_id] << "\t"; cout.flush();
+        cout << endl;
+        for (size_t slope_id = 0; slope_id < slope_avg_abs_diff_sd.size(); slope_id++)
+            cout << slope_avg_abs_diff_sd[slope_id] << "\t"; cout.flush();
+        cout << endl;
+
+        // Find the most lowest slope
+        float min_slope = 1000000.0f;
+        size_t min_slope_id = 0;
+        for (size_t slope_id = 0; slope_id < slope_avg_abs_diff_sd.size(); slope_id++)
+        {
+            if (min_slope > slope_avg_abs_diff_sd[slope_id])
+            {
+                min_slope = slope_avg_abs_diff_sd[slope_id];
+                min_slope_id = slope_id;
+            }
+        }
+
+        size_t good_pcut = 1;  // default, low default in case less similarity for top-k rank, then minsup should be lower
+        if (slope_avg_abs_diff_sd.size() > 0)
+            good_pcut = slope_avg_abs_diff_sd_label[min_slope_id];  // start from pcut + 1
+
+        cout << "Debug good_pcut: " << good_pcut << endl;
+
+        // Calculate item weight from ACW
+        frequent_item_count.clear();
+        frequent_item_weight.clear();
+        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+        {
+            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+            {
+                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+                // Skip if not fall within query
+                //if (!query_bin_mask[cluster_id])
+                    //continue;
+
+                if (frequent_item_count.find(cluster_id) == frequent_item_count.end())
+                {
+                    frequent_item_count[cluster_id] = 0;
+                    frequent_item_weight[cluster_id] = 0;
+                }
+                frequent_item_count[cluster_id]++;
+                frequent_item_weight[cluster_id]++;
+            }
+        }
+        // Find max
+        item_count_max = 0;
+        //unordered_map<size_t, size_t>::iterator frequent_item_count_it;
+        for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
+        {
+            if (item_count_max < frequent_item_count_it->second)
+                item_count_max = frequent_item_count_it->second;
+        }
+
+        // Normalize and filtering
+        unordered_map<size_t, float>::iterator frequent_item_weight_it;
+        for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
+        {
+            frequent_item_weight_it->second /= item_count_max;          // normalize by max of cluster_frequency
+            if (frequent_item_weight_it->second < good_pcut / 100.0f)   // If auto minsup is false -> not pass
+                frequent_item_weight_it->second = 0;                    // not pass minsup, set zero
+        }
+        frequent_item_weight.swap(fi_weight);
+    }
+    else
+    {
+        /// Finding the best p_cut for each rank_id
+        /*
+        Step to find the best pCut for each toprank
+        1. Get abs-SD different, for finding the stability of varience(SD)
+        2. Find abs-slope
+        3. Find lowest abs-slope is to find the highest stability of function
+        */
+        vector<size_t> good_pcut;
+        for (size_t bow_id = 0; bow_id < total_sd.size(); bow_id++)
+        {
+            // Find different for each sd_step
+            vector<float> sd_diff;
+            vector<size_t> pcut_sd_diff_label;
+            float prev_diff = 0.0f;
+            for (size_t pcut_id = 1; pcut_id < total_sd[bow_id].size(); pcut_id++)
+            {
+                float curr_diff = abs(total_sd[bow_id][pcut_id - 1] - total_sd[bow_id][pcut_id]);
+
+                if (curr_diff != 0 && prev_diff != curr_diff)
+                {
+                    sd_diff.push_back(curr_diff);
+                    pcut_sd_diff_label.push_back(pcut_id * pcut_step);     // pcut start from pcut_step 1
+
+                    prev_diff = curr_diff;
+                }
+            }
+
+            // Find slope for each sd_step
+            vector<float> sd_diff_slope;
+            vector<size_t> pcut_sd_diff_slope_label;
+            for (size_t sd_id = 1; sd_id < sd_diff.size() - 1; sd_id++)
+            {
+                // Packing data to find slope
+                float* x_data = new float[3];
+                float* y_data = new float[3];
+                x_data[0] = sd_id - 1;
+                x_data[1] = sd_id;
+                x_data[2] = sd_id + 1;
+                y_data[0] = sd_diff[sd_id - 1];
+                y_data[1] = sd_diff[sd_id];
+                y_data[2] = sd_diff[sd_id + 1];
+                /*float* x_data = new float[2];
+                float* y_data = new float[2];
+                x_data[0] = sd_id;
+                x_data[1] = sd_id + 1;
+                y_data[0] = sd_diff[sd_id];
+                y_data[1] = sd_diff[sd_id + 1];*/
+
+                sd_diff_slope.push_back(abs(calc_slope(x_data, y_data, 3)));
+                //sd_diff_slope.push_back(abs(calc_slope(x_data, y_data, 2)));
+                pcut_sd_diff_slope_label.push_back(pcut_sd_diff_label[sd_id]);
+
+                // Release memory
+                delete[] x_data;
+                delete[] y_data;
+            }
+
+            // Find the most lowest slope
+            float min_slope = 1000000.0f;
+            size_t min_slope_id = 0;
+            for (size_t sd_id = 0; sd_id < sd_diff_slope.size(); sd_id++)
+            {
+                if (min_slope > sd_diff_slope[sd_id])
+                {
+                    min_slope = sd_diff_slope[sd_id];
+                    min_slope_id = sd_id;
+                }
+            }
+
+            // Save good p_cut for this rank
+            if (pcut_sd_diff_slope_label.size() > 0)    // Skip if cannot find any slope, data not enough
+                good_pcut.push_back(pcut_sd_diff_slope_label[min_slope_id]);
+            else
+                good_pcut.push_back(1);                 // Use default
+
+            // Release memory
+            sd_diff.clear();
+            pcut_sd_diff_label.clear();
+            sd_diff_slope.clear();
+            pcut_sd_diff_slope_label.clear();
+        }
+
+        // Debut best_pcut
+        cout << "Debug good pcut: ";
+        for (size_t bow_id = 0; bow_id < good_pcut.size(); bow_id++)
+            cout << good_pcut[bow_id] << " ";
+        cout << endl;
+
+
+        // Calculate item weight from ACW
+        frequent_item_count.clear();
+        frequent_item_weight.clear();
+        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+        {
+            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+            {
+                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+                // Skip if not fall within query
+                //if (!query_bin_mask[cluster_id])
+                    //continue;
+
+                if (frequent_item_count.find(cluster_id) == frequent_item_count.end())
+                {
+                    frequent_item_count[cluster_id] = 0;
+                    frequent_item_weight[cluster_id] = 0;
+                }
+                frequent_item_count[cluster_id]++;
+                frequent_item_weight[cluster_id]++;
+            }
+        }
+        // Find max
+        item_count_max = 0;
+        //unordered_map<size_t, size_t>::iterator frequent_item_count_it;
+        for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
+        {
+            if (item_count_max < frequent_item_count_it->second)
+                item_count_max = frequent_item_count_it->second;
+        }
+
+        // Cut
+        bool* auto_minsup_filter = new bool[run_param.CLUSTER_SIZE];
+        for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
+            auto_minsup_filter[cluster_id] = false;
+        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+        {
+            bin_pass = 0;
+            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+            {
+                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+                // Skip if not fall within query
+                //if (!query_bin_mask[cluster_id])
+                    //continue;
+
+                auto_minsup_filter[cluster_id] |= float(frequent_item_count[cluster_id]) / item_count_max >= good_pcut[bow_id] / 100.0f;
+            }
+        }
+
+        // Normalize and filtering
+        unordered_map<size_t, float>::iterator frequent_item_weight_it;
+        for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
+        {
+            frequent_item_weight_it->second /= item_count_max;          // normalize by max of cluster_frequency
+            if (!auto_minsup_filter[frequent_item_weight_it->first])    // If auto minsup is false -> not pass
+                frequent_item_weight_it->second = 0;                    // not pass minsup, set zero
+        }
+        frequent_item_weight.swap(fi_weight);
+    }
+
+    // Release memory
+    delete[] query_bin_mask;
+    //delete[] auto_minsup_filter;
+
+}
+
+void LOCSD(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight)
+{
+    bool* query_bin_mask = new bool[run_param.CLUSTER_SIZE];        // cluster_id, flag
+    for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
+        query_bin_mask[cluster_id] = false;
+    for (size_t bin_id = 0; bin_id < query_bow.size(); bin_id++)
+        query_bin_mask[query_bow[bin_id].cluster_id] = true;
+
+    // Calculate item weight from ACW
+    unordered_map<size_t, size_t> frequent_item_count;      // cluster_id, count
+    unordered_map<size_t, float> frequent_item_weight;      // cluster_id, weight
+    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+    {
+        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+        {
+            size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+            // Skip if not fall within query
+            if (!query_bin_mask[cluster_id])
+                continue;
+
+            if (frequent_item_count.find(cluster_id) == frequent_item_count.end())
+            {
+                frequent_item_count[cluster_id] = 0;
+                frequent_item_weight[cluster_id] = 0;
+            }
+            frequent_item_count[cluster_id]++;
+            frequent_item_weight[cluster_id]++;
+        }
+    }
+    // Find max
+    size_t item_count_max = 0;
+    unordered_map<size_t, size_t>::iterator frequent_item_count_it;
+    for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
+    {
+        if (item_count_max < frequent_item_count_it->second)
+            item_count_max = frequent_item_count_it->second;
+    }
+    /*
+    // Normalize and filtering
+    unordered_map<size_t, float>::iterator frequent_item_weight_it;
+    for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
+    {
+        frequent_item_weight_it->second /= item_count_max;  // normalize
+        if (frequent_item_weight_it->second < minsup / 100.0f)
+            frequent_item_weight_it->second = 0;            // not pass minsup, set zero
+    }
+    frequent_item_weight.swap(fi_weight);
+    */
+
+    /// Cut test
+    stringstream pass_pcut;
+    int bin_pass;
+    // Write rank_id
+    pass_pcut << "rank_id,";
+    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+        pass_pcut << bow_id << ",";
+    pass_pcut << "all_bin" << endl;
+    // Write total bin
+    pass_pcut << "total_bin,";
+    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+        pass_pcut << bow_sig_pack[bow_id].size() << ",";
+    pass_pcut << frequent_item_count.size() << endl;
+
+    // Write cut for each rank
+    // pcut is percentage
+    vector< vector<float> > compactness;
+    int pcut_step = 5;
+    for (int pcut = pcut_step; pcut <= 100; pcut += pcut_step)
+    {
+        pass_pcut << pcut << ",";
+        /// -- Pass test
+        unordered_map<size_t, size_t> bin_pass_count;       // cluster_id, pass_count
+        unordered_map<size_t, bool> bin_pass_mask;          // cluster_id, pass_flag
+        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+        {
+            bin_pass = 0;
+            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+            {
+                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+                // Skip if not fall within query
+                if (!query_bin_mask[cluster_id])
+                    continue;
+
+                bool pass_cut = float(frequent_item_count[cluster_id]) / item_count_max >= pcut / 100.0f;
+
+                if (pass_cut)
+                {
+                    if (bin_pass_count.find(cluster_id) == bin_pass_count.end())
+                        bin_pass_count[cluster_id] = 0;
+                    bin_pass_count[cluster_id]++;
+                    bin_pass++; // bin pass without mask
+                    bin_pass_mask[cluster_id] = pass_cut;
+                }
+                else
+                    bin_pass_mask[cluster_id] |= pass_cut;
+            }
+            pass_pcut << bin_pass << ",";
+        }
+        pass_pcut << bin_pass_count.size() << ",";
+
+        /// -- Compactness test
+        // compactness : It is the sum of squared distance from each point to their corresponding centers.
+        for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+        {
+            size_t total_feature_pass_count = 0;
+
+            // Accumulate total feature pass count
+            for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+            {
+                size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+                // Skip if not fall within query
+                if (!query_bin_mask[cluster_id])
+                    continue;
+
+                if (bin_pass_mask[cluster_id])
+                    total_feature_pass_count += bow_sig_pack[bow_id][bin_id].features.size();
+            }
+
+            // Continue finding TSP if we have vertex pass p_cut more than 3 points
+            // 1. Finding TSP
+            // 2. Cut far distance out by otsu thresholding
+            // 3. Calculate compactness for each small group
+            // 4. Average compactness
+            //
+            // Compactness is mean of square distance to centriod
+            // Distance = sqrt((x1-xm)^2+(y1-ym)^2)
+            // So, compactness = sum(distance^2)/n
+            //                 = sum(sqrt((x1-xm)^2+(y1-ym)^2)^2)/n
+            //                 = sum((x1-xm)^2+(y1-ym)^2)/n
+            float total_average_compactness = 0.0f;
+            if (total_feature_pass_count > 3)
+            {
+                // 1.1 Packing feature
+                size_t vert_count = 0;
+                float* vertx = new float[total_feature_pass_count];
+                float* verty = new float[total_feature_pass_count];
+                for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+                {
+                    size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+                    // Skip if not fall within query
+                    if (!query_bin_mask[cluster_id])
+                        continue;
+
+                    if (bin_pass_mask[cluster_id])
+                    {
+                        for (size_t feature_id = 0; feature_id < bow_sig_pack[bow_id][bin_id].features.size(); feature_id++)
+                        {
+                            vertx[vert_count] = bow_sig_pack[bow_id][bin_id].features[feature_id].x;
+                            verty[vert_count] = bow_sig_pack[bow_id][bin_id].features[feature_id].y;
+                            vert_count++;
+                        }
+                    }
+                }
+
+                // 1.2 Create symmat distance matrix
+                float* symmat_dist;
+                create_symmat(symmat_dist, total_feature_pass_count);
+                calculate_symmat_distance(total_feature_pass_count, vertx, verty, symmat_dist);
+
+                // 1.3 Finding TSP
+                tsp path_solver(total_feature_pass_count, symmat_dist);
+
+                vector<size_t> best_path = path_solver.search_path(tsp::TSP_LINKNJOY);
+                cout << "get path size: " << best_path.size() << " done!" << endl;
+
+                // 2.1 Finding threshold
+                float threshold = path_solver.get_otsu_inter_distance() * 0.30;
+                cout << "Threshold: " << threshold << endl;
+
+                // 3.1 Cut group
+                size_t best_path_size = best_path.size();
+                size_t group_feature_first_idx = 0;
+                size_t group_feature_last_idx = 0;
+                float curr_group_average_x = 0.0f;
+                float curr_group_average_y = 0.0f;
+                vector< pair<size_t, size_t> > feature_groups;
+                Mat group_img_out(1000, 1000, CV_8UC3, Scalar(0));  // visualize group
+                for (size_t node_idx = 0; node_idx < best_path_size - 1; node_idx++)
+                {
+                    size_t node_label = best_path[node_idx];
+                    size_t next_node_label = best_path[node_idx + 1];
+
+                    // Accumulating sum of vertex
+                    curr_group_average_x += vertx[node_label];
+                    curr_group_average_y += verty[node_label];
+
+                    // Found seperated group
+                    // If the group was found, and the size of group is large enough, then running
+                    if (path_solver.get_cost_between(node_label, next_node_label) > threshold || node_idx == best_path_size - 2)
+                    {
+                        group_feature_last_idx = node_idx;
+                        size_t group_size = group_feature_last_idx - group_feature_first_idx + 1;
+                        // Filtering total sub group with at least 3 points per group
+                        if (group_size >= 3)
+                        {
+                            // Save group range
+                            feature_groups.push_back(pair<size_t, size_t>(group_feature_first_idx, group_feature_last_idx));
+
+                            // Calculating Centroid
+                            curr_group_average_x /= group_size;
+                            curr_group_average_y /= group_size;
+
+                            // Calculate Compactness
+                            float current_group_compactness = 0.0f;
+                            for (size_t group_node_idx = group_feature_first_idx; group_node_idx < group_feature_last_idx; group_node_idx++)
+                            {
+                                // Calculating square_distance to centroid
+                                size_t group_node_label = best_path[group_node_idx];
+                                float square_dist = (vertx[group_node_label] - curr_group_average_x) * (vertx[group_node_label] - curr_group_average_x) +
+                                                    (verty[group_node_label] - curr_group_average_y) * (verty[group_node_label] - curr_group_average_y);
+
+                                // Sum of square distance
+                                current_group_compactness += square_dist;
+                            }
+                            // Compactness = Sum(d^2) / n
+                            current_group_compactness /= group_size;
+
+                            // Accumulating total compactness
+                            total_average_compactness += current_group_compactness;
+
+                            // Visualize group and centriod
+                            Point2f pcentroid(curr_group_average_x * 1000, curr_group_average_y * 1000);
+                            for (size_t group_node_idx = group_feature_first_idx; group_node_idx <= group_feature_last_idx; group_node_idx++)
+                            {
+                                size_t node_idx = best_path[group_node_idx];
+                                Point2f pstart(vertx[node_idx] * 1000, verty[node_idx] * 1000);
+
+                                // Point-and-centroid
+                                line(group_img_out, pstart, pcentroid, Scalar(0, 0, 255), 1, CV_AA);
+                                circle(group_img_out, pstart, 0, Scalar(0, 255, 0), 2, CV_AA);
+                            }
+                            circle(group_img_out, pcentroid, 0, Scalar(255, 0, 0), 2, CV_AA);
+                        }
+                        // Rollnext
+                        group_feature_first_idx = group_feature_last_idx + 1;
+
+                        // Reset temperature variable
+                        curr_group_average_x = 0;
+                        curr_group_average_y = 0;
+                    }
+                }
+                // Calculating average compactness
+                if (feature_groups.size() > 0)
+                    total_average_compactness /= feature_groups.size();
+                else
+                    total_average_compactness = 0.0f;
+
+                /*stringstream path_out;
+                path_out << "/home/stylix/webstylix/code/ins_online/out_test/group_img_out_" << bow_id << "_" << pcut << "_lnj.png";
+                cout << "Write out image.."; cout.flush();
+                imwrite(path_out.str(), group_img_out);
+                cout << "done" << endl;*/
+
+                Mat test_img_out(1000, 1000, CV_8UC3, Scalar(0));
+
+                // Draw line
+                for (size_t point_idx = 0; point_idx < total_feature_pass_count - 1; point_idx++)
+                {
+                    size_t node_idx = best_path[point_idx];
+                    size_t next_node_idx = best_path[point_idx + 1];
+
+                    Point2i pstart(vertx[node_idx] * 1000, verty[node_idx] * 1000);
+                    Point2i pend(vertx[next_node_idx] * 1000, verty[next_node_idx] * 1000);
+
+                    // Draw line only pass threshold
+                    if (path_solver.get_cost_between(node_idx, next_node_idx) <= threshold)
+                        line(test_img_out, pstart, pend, Scalar(0, 0, 255), 1, CV_AA);
+
+                    circle(test_img_out, pstart, 0, Scalar(0, 255, 0), 2, CV_AA);
+                    if (point_idx == total_feature_pass_count - 2)
+                        circle(test_img_out, pend, 0, Scalar(0, 255, 0), 2, CV_AA);
+                }
+
+                /*stringstream path2_out;
+                path2_out << "/home/stylix/webstylix/code/ins_online/out_test/group_img_out_" << bow_id << "_" << pcut << "_lnj_p.png";
+                cout << "Write out image.."; cout.flush();
+                imwrite(path2_out.str(), test_img_out);
+                cout << "done" << endl;*/
+
+                // Release mem
+                delete[] vertx;
+                delete[] verty;
+                delete[] symmat_dist;
+
+                // Save Compactness for finding best minsup later
+                if (bow_id + 1 > compactness.size())
+                {
+                    vector<float> sub_compactness;
+                    sub_compactness.push_back(total_average_compactness);
+                    compactness.push_back(sub_compactness);
+                }
+                else
+                    compactness[bow_id].push_back(total_average_compactness);
+            }
+            // Print out compactness
+            pass_pcut << total_average_compactness << ",";
+        }
+        // pass one cut, continue next cut
+        pass_pcut << endl;
+    }
+
+
+    // Compactness Debug
+    cout << setprecision(5) << fixed;
+    for (size_t bow_id = 0; bow_id < compactness.size(); bow_id++)
+    {
+        for (size_t cut_id = 0; cut_id < compactness[bow_id].size(); cut_id++)
+        {
+            cout << compactness[bow_id][cut_id] << " ";
+        }
+        cout << endl;
+    }
+
+    /// Finding best p_cut for each rank_id
+    vector<size_t> good_pcut;
+    for (size_t bow_id = 0; bow_id < compactness.size(); bow_id++)
+    {
+        // Find average compactness for all pcut
+        float average_compactness = 0.0f;
+        size_t pcut_count = 0;
+        for (size_t pcut_id = 0; pcut_id < compactness[bow_id].size(); pcut_id++)
+        {
+            if (compactness[bow_id][pcut_id] > 0.0f)
+            {
+                average_compactness += compactness[bow_id][pcut_id];
+                pcut_count++;
+            }
+        }
+        average_compactness /= pcut_count;
+
+        // Find first pcut below average_compactness
+        for (size_t pcut_id = 0; pcut_id < compactness[bow_id].size(); pcut_id++)
+        {
+            if (compactness[bow_id][pcut_id] < average_compactness)
+            {
+                good_pcut.push_back(pcut_id);
+                break;
+            }
+        }
+    }
+
+    // Debut best_pcut
+    cout << "Debug good pcut: ";
+    for (size_t pcut_id = 0; pcut_id < good_pcut.size(); pcut_id++)
+        cout << good_pcut[pcut_id] << " ";
+    cout << endl;
+
+
+    // Calculate item weight from ACW
+    frequent_item_count.clear();
+    frequent_item_weight.clear();
+    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+    {
+        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+        {
+            size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+            // Skip if not fall within query
+            //if (!query_bin_mask[cluster_id])
+                //continue;
+
+            if (frequent_item_count.find(cluster_id) == frequent_item_count.end())
+            {
+                frequent_item_count[cluster_id] = 0;
+                frequent_item_weight[cluster_id] = 0;
+            }
+            frequent_item_count[cluster_id]++;
+            frequent_item_weight[cluster_id]++;
+        }
+    }
+    // Find max
+    item_count_max = 0;
+    //unordered_map<size_t, size_t>::iterator frequent_item_count_it;
+    for (frequent_item_count_it = frequent_item_count.begin(); frequent_item_count_it != frequent_item_count.end(); frequent_item_count_it++)
+    {
+        if (item_count_max < frequent_item_count_it->second)
+            item_count_max = frequent_item_count_it->second;
+    }
+
+    // Cut
+    bool* auto_minsup_filter = new bool[run_param.CLUSTER_SIZE];
+    for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
+        auto_minsup_filter[cluster_id] = false;
+    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+    {
+        bin_pass = 0;
+        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+        {
+            size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+            // Skip if not fall within query
+            //if (!query_bin_mask[cluster_id])
+                //continue;
+
+            auto_minsup_filter[cluster_id] |= float(frequent_item_count[cluster_id]) / item_count_max >= ((good_pcut[bow_id] + 6) * pcut_step) / 100.0f;
+        }
+    }
+
+    // Normalize and filtering
+    unordered_map<size_t, float>::iterator frequent_item_weight_it;
+    for (frequent_item_weight_it = frequent_item_weight.begin(); frequent_item_weight_it != frequent_item_weight.end(); frequent_item_weight_it++)
+    {
+        frequent_item_weight_it->second /= item_count_max;          // normalize by max of cluster_frequency
+        if (!auto_minsup_filter[frequent_item_weight_it->first])    // If auto minsup is false -> not pass
+            frequent_item_weight_it->second = 0;                    // not pass minsup, set zero
+    }
+    frequent_item_weight.swap(fi_weight);
+
+    // Write to file
+    text_write(query_path + "_rankcut.csv", pass_pcut.str(), false);
+
+    // Release memory
+    delete[] query_bin_mask;
+    delete[] auto_minsup_filter;
+}
+
+void QE_AVG(const string& query_path, vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight)
+{
+    bool* query_bin_mask = new bool[run_param.CLUSTER_SIZE];        // cluster_id, flag
+    for (size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
+        query_bin_mask[cluster_id] = false;
+    for (size_t bin_id = 0; bin_id < query_bow.size(); bin_id++)
+        query_bin_mask[query_bow[bin_id].cluster_id] = true;
+
+
+    // Skip if not fall within query
+    //if (!query_bin_mask[cluster_id])
+        //continue;
+
+
+    // Clear old bow
+    for (size_t bin_id = 0; bin_id < query_bow.size(); bin_id++)
+        query_bow[bin_id].features.clear();
+    query_bow.clear();
+
+    // Initialize blank sparse bow
+    unordered_map<size_t, float> frequent_item_weight;
+    unordered_map<size_t, vector<feature_object> > curr_sparse_bow; // cluster_id, features
+    mask_pass = 0;
+    // Set bow
+    // Add feature to curr_sparse_bow at cluster_id
+    // Frequency of bow is curr_sparse_bow[].size()
+    for (size_t bow_id = 0; bow_id < bow_sig_pack.size(); bow_id++)
+    {
+        for (size_t bin_id = 0; bin_id < bow_sig_pack[bow_id].size(); bin_id++)
+        {
+            // Get cluster from quantizad index of feature
+            size_t cluster_id = bow_sig_pack[bow_id][bin_id].cluster_id;
+
+            for (size_t feature_id = 0; feature_id < bow_sig_pack[bow_id][bin_id].features.size(); feature_id++)
+                // Keep new feature into its corresponding bin (cluster_id)
+                curr_sparse_bow[cluster_id].push_back(bow_sig_pack[bow_id][bin_id].features[feature_id]);
+
+            if (frequent_item_weight.find(cluster_id) == frequent_item_weight.end())
+                frequent_item_weight[cluster_id] = 0;
+            frequent_item_weight[cluster_id] += bow_sig_pack[bow_id][bin_id].features.size();
+        }
+    }
+
+    /// Make compact bow, with tf-idf frequency
+    for (unordered_map<size_t, vector<feature_object> >::iterator sparse_bow_it = curr_sparse_bow.begin(); sparse_bow_it != curr_sparse_bow.end(); sparse_bow_it++)
+    {
+        // Looking for non-zero bin of cluster,
+        // then put that bin together with specified cluster_id
+        // Create new bin with cluster_id, frequency, and its features
+        bow_bin_object bow_bin;
+        bow_bin.cluster_id = sparse_bow_it->first;
+
+        // Feature weight acculumating
+        float feature_weight = 0.0f;
+        for (size_t feature_id = 0; feature_id < sparse_bow_it->second.size(); feature_id++)
+            feature_weight += sparse_bow_it->second[feature_id].weight;
+
+        // tf-idf
+        if ((int)feature_weight > 0)
+            feature_weight = (1 + log10(feature_weight)) * inverted_hist.get_idf(bow_bin.cluster_id); // tf*idf = log10(feature_weight) * idf[cluster_id]
+        else
+            continue;   // Skip adding to bow
+
+        // Average QE
+        frequent_item_weight[bow_bin.cluster_id] = 1;
+        bow_bin.freq = feature_weight / bow_sig_pack.size();
+        bow_bin.features.swap(sparse_bow_it->second);
+
+        // Keep new bin into compact_bow
+        query_bow.push_back(bow_bin);
+    }
+
+    /// Normalization
+    // Unit length
+    float sum_of_square = 0.0f;
+    float unit_length = 0.0f;
+    for (size_t bin_idx = 0; bin_idx < query_bow.size(); bin_idx++)
+        sum_of_square += query_bow[bin_idx].freq * query_bow[bin_idx].freq;
+    unit_length = sqrt(sum_of_square);
+
+    // Normalizing
+    for (size_t bin_idx = 0; bin_idx < query_bow.size(); bin_idx++)
+        query_bow[bin_idx].freq = query_bow[bin_idx].freq / unit_length;
+
+    // Keep weight
+    fi_weight.swap(frequent_item_weight);
+}
+
 void ScanningQuery(const string& query_path)
 {
     int totalBin = 0;
@@ -3598,6 +3469,89 @@ void ScanningQuery(const string& query_path)
 
 }
 
+void DirectQuery(const string& query_path)
+{
+	// Resize image
+	string query_scaled_path = query_path;
+    if (run_param.query_scale_enable)
+        query_scaled_path = ResizeQuery(query_path);
+
+    // Pack query list
+    vector<string> queries;
+    queries.push_back(query_scaled_path);
+
+    // Request extract hist
+    vector<bow_bin_object> bow_hist;
+    cout << "Extracting BOW histogram.."; cout.flush();
+    startTime = CurrentPreciseTime();
+    extract_hist(simulated_session, queries, bow_hist);
+    extractTime = TimeElapse(startTime);
+    cout << "done! (in " << setprecision(2) << fixed << extractTime << " s)" << endl;
+
+	if (int(bow_hist.size()) < 4)
+    {
+        cout << "Too small query or no feature can be extracted!" << endl;
+        cout << "Switched to original query..." << endl;
+
+        // Pack query list
+        queries.clear();
+        queries.push_back(query_path);
+
+        // Request extract hist
+        cout << "Extracting BOW histogram.."; cout.flush();
+        startTime = CurrentPreciseTime();
+        extract_hist(simulated_session, queries, bow_hist);
+        extractTime = TimeElapse(startTime);
+        cout << "done! (in " << setprecision(2) << fixed << extractTime << " s)" << endl;
+    }
+
+    // MAP report bin size
+    map_push_report(toString(bow_hist.size()) + ",");
+    cout << "Bin amount: " << bow_hist.size() << " bins" << endl;
+
+    // MAP report num_kp
+    map_push_report(toString(num_kp) + ",");
+    cout << "Total feature(s): " << num_kp << " point(s)" << endl;
+
+    // MAP report mask_pass
+    map_push_report(toString(mask_pass) + ",");
+    cout << "Mask passed: " << mask_pass << " point(s)" << endl;
+
+    // Search matching visualization
+    bool is_dump = false;
+    if (is_dump)
+        inverted_hist.start_matching_dump(run_param.dataset_root_dir, ImgParentPaths, ImgParentsIdx, ImgLists, vector<size_t>(), query_scaled_path);
+
+    // Search
+    cout << "==== Search Timing Info ====" << endl;
+    startTime = CurrentPreciseTime();
+    result_id = search_by_bow_sig(bow_hist);
+    searchTime = TimeElapse(startTime);
+    cout << "Match with: " << TotalMatch << " videos" << endl;
+    cout << "Search time: " <<  searchTime << " s" << endl;
+    cout << "Result (dataset_id) : " << result_id << endl;
+
+    // Stop matching dump
+    if (is_dump)
+        inverted_hist.stop_matching_dump();
+
+    // MAP report number of matched dataset
+    map_push_report(toString(TotalMatch) + ",");
+
+    // MAP report extractTime
+    map_push_report(toString(extractTime) + ",");
+
+    // MAP report search time usage
+    map_push_report(toString(searchTime) + ",");
+
+    ExportEvalRank(query_scaled_path);
+
+    ExportRawRank(query_path);
+
+    // Release memory
+    bow_hist.clear();
+}
+
 void LoadSpecificBow(size_t dataset_id, vector<bow_bin_object>& load_hist)
 {
     string in = run_param.database_root_dir + "/" + run_param.dataset_header + "/bow";
@@ -3728,7 +3682,7 @@ void Evaluate()
     }
 }
 
-void ACW_RUN()
+void FIX_RUN()
 {
     int pcut_step = 5;
     for (int pcut = pcut_step; pcut < 100; pcut++)

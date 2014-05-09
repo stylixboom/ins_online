@@ -111,19 +111,18 @@ void import_hist(const string& in, vector<bow_bin_object>& load_hist);
 string ResizeQuery(const string& query_path);
 // Weighting cluster_id by counting total bin
 template<typename T, typename U> void calculate_symmat_distance(size_t nvert, const T vertx[], const T verty[], U symmat_dist[]);
-// Accumulate Weight
-void AUTOW_SD(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight);
-void AUTOW_COMPACTNESS(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight);
-void ACW(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight);
-void QE_AVG(const string& query_path, vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight);
-// Weighting cluster_id by Frequent Item Mining (FP-growth)
-void SIW(const string& query_path, int minsup, unordered_map<size_t, float>& fi_weight);
-void FIW(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fp_weight);
 void QB1_Bow(vector<bow_bin_object>& bow);  // bow will be modified internally
-void DirectQuery(const string& query_path);
 void QueryBootstrapping_v1(const string& query_path); // Boostrapped query to find area, then crop sub area from original size to be sub queries
 void QueryBootstrapping_v2(const string& query_path); // Boostrapped query to find rank, then combind new bow_hist from frequent bin of top rank to be searched
+// Weighting cluster_id by Frequent Item Mining (FP-growth)
+void FIW(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fp_weight);
+void PREFIW(const string& query_path, int minsup, unordered_map<size_t, float>& fi_weight);
+void FIX(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight);
+void LOCSD(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight);
+void GLOSD(const string& query_path, const vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight);
+void QE_AVG(const string& query_path, vector<bow_bin_object>& query_bow, const vector< vector<bow_bin_object> >& bow_sig_pack, int minsup, unordered_map<size_t, float>& fi_weight);
 void ScanningQuery(const string& query_path);
+void DirectQuery(const string& query_path);
 void LoadSpecificBow(size_t dataset_id, vector<bow_bin_object>& load_hist);
 float Compute_map(const string& groundtruth_path);
 void Evaluate();
