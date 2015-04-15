@@ -4,10 +4,10 @@
 namespace ins_online_AutoVersion{
 	
 	//Date Version Types
-	static const char ins_online_DATE[] = "09";
-	static const char ins_online_MONTH[] = "05";
-	static const char ins_online_YEAR[] = "2014";
-	static const char ins_online_UBUNTU_VERSION_STYLE[] =  "14.05";
+	static const char ins_online_DATE[] = "05";
+	static const char ins_online_MONTH[] = "03";
+	static const char ins_online_YEAR[] = "2015";
+	static const char ins_online_UBUNTU_VERSION_STYLE[] =  "15.03";
 	
 	//Software Status
 	static const char ins_online_STATUS[] =  "Alpha";
@@ -15,18 +15,18 @@ namespace ins_online_AutoVersion{
 	
 	//Standard Version Type
 	static const long ins_online_MAJOR  = 2;
-	static const long ins_online_MINOR  = 0;
-	static const long ins_online_BUILD  = 9;
-	static const long ins_online_REVISION  = 20;
+	static const long ins_online_MINOR  = 7;
+	static const long ins_online_BUILD  = 528;
+	static const long ins_online_REVISION  = 2836;
 	
 	//Miscellaneous Version Types
-	static const long ins_online_BUILDS_COUNT  = 10;
-	#define ins_online_RC_FILEVERSION 2,0,9,20
-	#define ins_online_RC_FILEVERSION_STRING "2, 0, 9, 20\0"
-	static const char ins_online_FULLVERSION_STRING [] = "2.0.9.20";
+	static const long ins_online_BUILDS_COUNT  = 1351;
+	#define ins_online_RC_FILEVERSION 2,7,528,2836
+	#define ins_online_RC_FILEVERSION_STRING "2, 7, 528, 2836\0"
+	static const char ins_online_FULLVERSION_STRING [] = "2.7.528.2836";
 	
 	//These values are to keep track of your versioning state, don't modify them.
-	static const long ins_online_BUILD_HISTORY  = 5;
+	static const long ins_online_BUILD_HISTORY  = 24;
 	
 
 }
