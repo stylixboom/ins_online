@@ -4,249 +4,288 @@
  *  Created on: August 11, 2013
  *      Author: Siriwat Kasamwattanarote
  */
+#include <iostream>
+#include <iomanip>
+#include <string>
+#include <sstream>
+#include <fstream>
+#include <vector>
+#include <bitset>
+#include <unistd.h>         // usleep
+#include <unordered_map>
+#include <memory>           // unique_ptr
+#include <omp.h>
+
+#include "opencv2/core/core.hpp"
+#include "opencv2/nonfree/features2d.hpp"
+#include "opencv2/highgui/highgui.hpp"
+#include "opencv2/calib3d/calib3d.hpp"
+#include "opencv2/imgproc/imgproc.hpp"
+#include <flann/flann.hpp>
+
+// Siriwat's header
+#include "../lib/alphautils/alphautils.h"
+#include "../lib/alphautils/imtools.h"
+#include "../lib/alphautils/hdf5_io.h"
+#include "../lib/sifthesaff/SIFThesaff.h"
+#include "../lib/ins/ins_param.h"
+#include "../lib/ins/invert_index.h"
+#include "../lib/ins/bow.h"
+#include "../lib/ins/quantizer.h"
+
+// Merlin's header
+#include "../lib/ins/core.hpp"      // Mask
+#include "../lib/ins/utils.hpp"
+#include "../lib/ins/compat.hpp"
 
 #include "bow_sig_extractor.h"
 
 using namespace std;
-using namespace tr1;
-using namespace cv;
 using namespace ::flann;
 using namespace alphautils;
+using namespace alphautils::imtools;
+using namespace alphautils::hdf5io;
 using namespace ins;
+using namespace cv;
+
+
+using namespace std;
+using namespace ::flann;
+using namespace alphautils;
+using namespace alphautils::imtools;
+using namespace alphautils::hdf5io;
+using namespace ins;
+
+using namespace ins::utils;
+using namespace ins::compat;
+
+using namespace cv;
 
 int main(int argc,char *argv[])
 {
+    visualize_enable = false;
+
     char menu;
-	cout << "==== BOW Histogram online extractor ====" << endl;
-    cout << "[l] Load preset dataset" << endl;
-    cout << "[q] Quit" << endl;
-    cout << "Enter menu:";cin >> menu;
-	switch(menu)
+    do
     {
-    case 'l':
-        run_param.LoadPreset();
-        break;
-    case 'q':
-        exit(0);
-        break;
+        cout << "==== BOW Histogram online extractor ====" << endl;
+        cout << "[l] Load preset dataset" << endl;
+        cout << "[d] Turn on draw feature and mask" << endl;
+        cout << "[q] Quit" << endl;
+        cout << "Enter menu:";cin >> menu;
+        switch(menu)
+        {
+        case 'l':
+            run_param.LoadPreset();
+            run_listening();
+            break;
+        case 'd':
+            visualize_enable = true;
+            break;
+        case 'q':
+            exit(0);
+            break;
+        }
+    }
+    while (menu != 'q');
+}
+
+void run_listening()
+{
+    // Initial environment
+    extractor_init();
+
+    cout << "Listening to query request.." << endl;
+    //cout << run_param.histrequest_path << endl;
+
+    // Query mode description
+    string multi_query_string;
+    if (run_param.earlyfusion_enable)
+    {
+        multi_query_string += "Early fusion, ";
+        if (run_param.earlyfusion_mode == EARLYFUSION_SUM)
+            multi_query_string += "sum";
+        else if (run_param.earlyfusion_mode == EARLYFUSION_MAX)
+            multi_query_string += "max";
+        else if (run_param.earlyfusion_mode == EARLYFUSION_AVG)
+            multi_query_string += "avg";
+        else if (run_param.earlyfusion_mode == EARLYFUSION_FIM)
+            multi_query_string += "fim";
+    }
+    else if (run_param.latefusion_enable)
+    {
+        multi_query_string += "Late fusion, ";
+        if (run_param.latefusion_mode == LATEFUSION_SUM)
+            multi_query_string += "sum";
+        else if (run_param.latefusion_mode == LATEFUSION_MAX)
+            multi_query_string += "max";
+        else if (run_param.latefusion_mode == LATEFUSION_AVG)
+            multi_query_string += "avg";
     }
 
-	extractor_init();//Init extract_bow_sig
-
-	cout << "Listening to query request.." << endl;
-
-
-	stringstream hist_request_path;
-
-	hist_request_path << run_param.query_root_dir << "/" << run_param.dataset_prefix << "/" << "hist_request.txt";
-
-	while (true)
-	{
-		// Waiting for hists
-		while(!is_path_exist(hist_request_path.str()))
+    // Listening request
+    vector<string> hist_request;
+    while (listening_histrequest(hist_request))
+    {
+        // Extracting histogram and search
+        size_t hist_request_size = hist_request.size();
+        for (size_t hist_request_idx = 0; hist_request_idx < hist_request_size; hist_request_idx++)
         {
-            usleep(100);
-            ls2null(hist_request_path.str());
-        }
+            cout << bluec << "================ " << endc << redc << "Feature Extraction" << endc << bluec << " ================" << endc << endl;
+            cout << "Multiple query mode: " << redc << multi_query_string << endc << endl;
 
-		//Load hist_request list
-		vector<string> hist_request;
-		ifstream hist_request_File (hist_request_path.str().c_str());
-		if (hist_request_File)
-		{
-			while (hist_request_File.good())
-			{
-				string line;
-				getline(hist_request_File, line);
-				if (line != "")
-				{
-					char const* delimsSpace = " ";// space
+            stringstream session_path;
+            stringstream selected_query_id_return_path;
+            session_path << run_param.online_working_path << "/" << hist_request[hist_request_idx];
+            selected_query_id_return_path << session_path.str() << "/" << "query.irep";
 
-					vector<string> SubQuery;
+            // Extract histogram
+            int selected_query_id = 0;
+            cout << "Extracting " << "[" << hist_request_idx + 1 << "/" << hist_request_size << "] " << session_path.str() << "...";cout.flush();
+            size_t bin_count = extract_bowsig(hist_request[hist_request_idx]); // session id
+            cout << "OK!" << endl;
 
-					string_splitter(line, delimsSpace, SubQuery);
-
-                    // See ref push_query for query parameter
-					hist_request.push_back(SubQuery[0]);
-				}
-			}
-			hist_request_File.close();
-
-			// After read!, Delete it!
-			remove(hist_request_path.str().c_str());
-		}
-
-		// Extracting histogram and search
-		vector<string>::iterator hist_request_it;
-		for (hist_request_it = hist_request.begin(); hist_request_it != hist_request.end(); hist_request_it++)
-		{
-			stringstream session_path;
-			stringstream hist_return_path;
-			stringstream selected_query_id_return_path;
-			session_path << run_param.query_root_dir << "/" << run_param.dataset_prefix << "/" << *hist_request_it;
-			hist_return_path << session_path.str() << "/" << "bow_hist.xct";
-			selected_query_id_return_path << session_path.str() << "/" << "query.irep";
-
-			vector<bow_bin_object> bow_hist;
-
-			// Extract histogram
-			int selected_query_id = 0;
-			cout << "Extracting " << session_path.str() << "...";cout.flush();
-			selected_query_id = extract_bow_sig(*hist_request_it, bow_hist); // session id
-			cout << bow_hist.size() << " bin(s)"; cout.flush();
-			cout << "OK!" << endl;
-
-            if (bow_hist.empty())
+            if (!bin_count)
                 cout << "Too small image!!, cannot extract histogram" << endl;
 
-			// Selected query id
-			ofstream selected_query_id_return_File (selected_query_id_return_path.str().c_str());
-			lockfile(selected_query_id_return_path.str());
-			if (selected_query_id_return_File.is_open())
-			{
-				selected_query_id_return_File << selected_query_id;
+            // Selected query id
+            ofstream selected_query_id_return_File (selected_query_id_return_path.str().c_str());
+            lockfile(selected_query_id_return_path.str());
+            if (selected_query_id_return_File.is_open())
+            {
+                selected_query_id_return_File << selected_query_id;
 
-				selected_query_id_return_File.close();
-			}
-			unlockfile(selected_query_id_return_path.str());
+                selected_query_id_return_File.close();
+            }
+            unlockfile(selected_query_id_return_path.str());
+        }
 
-			// Write Histogram result
-			export_hist(hist_return_path.str(), bow_hist);
-		}
-	}
+        cout << "Listening to query request.." << endl;
+    }
 
-	cout << "Closing service..." << endl;
-	//extract_bow_sigDest();//Destroy extract_bow_sigor
+    cout << "Closing service..." << endl;
 }
 
 void extractor_init()
 {
-    string invertedhist_path = run_param.database_root_dir + "/" + run_param.dataset_header + "/invdata_" + run_param.dataset_header + "/invertedhist.def";
-    string cluster_path = run_param.database_root_dir + "/" + run_param.dataset_header + "/cluster";
-    string search_index_path = run_param.database_root_dir + "/" + run_param.dataset_header + "/searchindex";
-
     cout << "Extractor initializing.." << endl;
-
-    // Load existing inverted header with idf
-    cout << "Loading idf..";
-    cout.flush();
-    startTime = CurrentPreciseTime();
-    load_idf(invertedhist_path);
-    cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
-
-    // Load existing cluster
-    cout << "Loading cluster..";
-    cout.flush();
-    startTime = CurrentPreciseTime();
-    //cout << "cluster_path: " << cluster_path << endl;
-    load_cluster(cluster_path);
-    cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
-
-    // Load existing FLANN search index
-    cout << "Load FLANN search index..";
-    cout.flush();
-    startTime = CurrentPreciseTime();
-    //cout << "search_index_path: " << search_index_path << endl;
-    Index< ::flann::L2<float> > search_index(cluster, SavedIndexParams(search_index_path)); // load index with provided dataset
-    cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
-
-    // Keep search index
-    flann_search_index = search_index;
+    ann.init(run_param);
+    inverted_file.init(run_param, true);    // <-- resume 'true' is to load header including idf
+    idf = inverted_file.get_idf();
+    cout << "done!" << endl;
 }
 
-void load_idf(const string& in)
+bool listening_histrequest(vector<string>& hist_request)
 {
-    if (is_path_exist(in))
-	{
-        // Load existing invert_index Def
-        ifstream iv_header_File (in.c_str(), ios::binary);
-        if (iv_header_File)
+    // Waiting for a request
+    while (!is_path_exist(run_param.histrequest_path) || islock(run_param.histrequest_path))
+        usleep(5000);   // 5 milliseconds
+
+    // Reading request
+    vector<string> read_hist_request;
+    ifstream hist_request_File (run_param.histrequest_path.c_str());
+    if (hist_request_File)
+    {
+        while (hist_request_File.good())
         {
-            // Load dataset_size (but not use)
-            size_t dataset_size;
-            iv_header_File.read((char*)(&dataset_size), sizeof(dataset_size));
-
-            // Load cluster_amount
-            for(size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
+            string line;
+            getline(hist_request_File, line);
+            if (line != "")
             {
-                // Read cluster_amount (but not use)
-                size_t read_cluster_amount;
-                iv_header_File.read((char*)(&read_cluster_amount), sizeof(read_cluster_amount));
-            }
+                // Check quit signal
+                if (line == SIGQUIT)
+                {
+                    // Remove after read SIGQUIT command
+                    remove(run_param.histrequest_path.c_str());
+                    return false;
+                }
 
-            // Load idf
-            for(size_t cluster_id = 0; cluster_id < run_param.CLUSTER_SIZE; cluster_id++)
-            {
-                // Read idf
-                float read_idf;
-                iv_header_File.read((char*)(&read_idf), sizeof(read_idf));
-                idf.push_back(read_idf);
-            }
+                vector<string> SubQuery;
 
-            // Close file
-            iv_header_File.close();
+                StringExplode(line, " ", SubQuery);
+
+                // See ref push_query for query parameter
+                read_hist_request.push_back(SubQuery[0]);
+            }
         }
-	}
+        hist_request_File.close();
+
+        // After read!, Delete it!, and take care all of this query stack
+        remove(run_param.histrequest_path.c_str());
+    }
+    else
+    {
+        cout << "Error occur in hist_request file" << endl;
+        exit(-1);
+    }
+
+    hist_request.swap(read_hist_request);
+
+    // Continue running if true
+    return true;
 }
 
-void load_cluster(const string& in)
+void read_querylist(const string& session_id, vector<string>& queries, vector<unique_ptr<Mask> >& masks, vector<string>& mask_paths)
 {
-    // Release memory
-    delete[] cluster.ptr();
+	ostringstream oss;
 
-    size_t cluster_dimension;   // Feature dimension
+	oss << run_param.online_working_path << "/" << session_id << "/" << run_param.querylist_filename;
 
-    // Get HDF5 header
-    HDF_get_2Ddimension(in, "clusters", cluster_size, cluster_dimension);
+    Properties<string> queryList(Properties<string>::load(oss.str()));
+    size_t numQueries = strtoull(queryList.get("query.size").c_str(), NULL, 0);
+	cout << endl << "Got " << numQueries << " queries." << endl;
 
-    // Wrap data to maxrix for flann knn searching
-    float* empty_cluster = new float[cluster_size * cluster_dimension];
+    for (size_t i = 0; i < numQueries; i++)
+    {
+        oss.str("");
+        oss << "query[" << i << "]";
 
-    // Read from HDF5
-    HDF_read_2DFLOAT(in, "clusters", empty_cluster, cluster_size, cluster_dimension);
+        string imagePath = queryList.get(oss.str() + ".image");
+        queries.push_back(imagePath);
 
-    Matrix<float> new_cluster(empty_cluster, cluster_size, cluster_dimension);
+        cout << "Query: " << get_filename(imagePath) << endl;
 
-    // Keep cluster
-    cluster = new_cluster;
+        // Read mask
+        cout << "Reading mask.." << endl;
+        startTime = CurrentPreciseTime();
+        if (queryList.contains(oss.str() + ".mask")) {
+            string maskType = queryList.get(oss.str() + ".mask_type");
+            string maskPath = queryList.get(oss.str() + ".mask");
+            mask_paths.push_back(maskPath);
+            if (maskType == "IMAGE")
+                masks.push_back(std::unique_ptr<Mask>(
+                        new ImageMask(ImageMask::load(maskPath))));
+            else if (maskType == "POLYGON")
+                masks.push_back(std::unique_ptr<Mask>(
+                        new PolygonMask(PolygonMask::load(maskPath))));
+            else
+                throw runtime_error("Unknown mask type: " + maskType);
+        } else {
+            masks.push_back(std::unique_ptr<Mask>(new NoMask()));
+        }
+    }
 }
 
-size_t extract_bow_sig(const string& session_id, vector<bow_bin_object>& bow_sig)
+size_t extract_bowsig(const string& session_id)
 {
-    int repID = 0; // Selected query index
-    int repGoodID = 0; // Selected index of good query
+    // Reset environment
+    total_kp = 0;
+    total_mask_pass = 0;
+    total_bin = 0;
 
-	stringstream query_path;
-	stringstream query_list_path;
-
-	query_path << run_param.query_root_dir << "/" << run_param.dataset_prefix << "/" << session_id;
-	query_list_path << query_path.str() << "/" << "list.txt";
+    //int repID = 0; // Selected query index
+    //int repGoodID = 0; // Selected index of good query
 
 	// Read query list
-	vector<string> masks;
 	vector<string> queries;
-	ifstream query_list_File (query_list_path.str().c_str());
-	if (query_list_File)
-	{
-		while (query_list_File.good())
-		{
-			string line;
-			getline(query_list_File, line);
-			if (line != "")
-			{
-                // Add query
-				queries.push_back(line);
-				// Add mask (to be check)
-				masks.push_back(line + ".mask");
-            }
-		}
-		query_list_File.close();
-	}
-	cout << endl << "Got " << queries.size() << " queries." << endl;
+	vector< unique_ptr<Mask> > masks;
+	vector<string> mask_paths;
+	read_querylist(session_id, queries, masks, mask_paths);
 
-	/// Multiple queries
-	if(false && queries.size() > 1)
+	/// Representative feature selection
+	if(false)
 	{
+	    /*
         int thre = 30;
 
 		vector< vector<int> > prev_assign;
@@ -429,349 +468,462 @@ size_t extract_bow_sig(const string& session_id, vector<bow_bin_object>& bow_sig
 		good_assign.clear();
 		good_distance.clear();
 		good_sift_header.clear();
+		*/
 	}
-	else /// One query
+	/// Normal feature extraction
+	else
 	{
-        cout << "Query: " << get_filename(queries[0]) << endl;
-        /// Read Mask as a polygon
-        // Load mask
-        ifstream mask_File (masks[0].c_str());
-        if (mask_File)
+	    // SIFT memory
+	    size_t query_size = queries.size();
+	    vector< vector<float*> > extracted_kp(query_size);
+	    vector< vector<float*> > extracted_desc(query_size);
+	    vector<Size> extracted_imgsize(query_size);
+	    cout << "SIFT Hessian Affine extracting.." << endl;
+	    timespec totalextractTime = CurrentPreciseTime();
+	    /// Parallel extracting
+        #pragma omp parallel shared(total_kp,queries,run_param,query_size,extracted_kp,extracted_desc,extracted_imgsize)
         {
-            cout << "Reading mask..";
-            cout.flush();
-            startTime = CurrentPreciseTime();
-
-            string line;
-            getline(mask_File, line);
-
-            // Read mask count
-            mask_count = strtoull(line.c_str(), NULL, 0);
-
-            for (size_t mask_id = 0; mask_id < mask_count; mask_id++)
+            /// Feature extraction
+            #pragma omp for schedule(dynamic,1) reduction(+ : total_kp)
+            for (size_t img_idx = 0; img_idx < query_size; img_idx++)
             {
-                getline(mask_File, line);
+                stringstream out_txt;
+                out_txt << img_idx << "/" << query_size << " " << greenc << get_filename(queries[img_idx]) << endc << " ";
+                SIFThesaff sift_extractor;
+                sift_extractor.init(run_param.colorspace, run_param.normpoint, run_param.rootsift);
+                timespec extractTime = CurrentPreciseTime();
+                // Sift Extraction
+                int num_kp = sift_extractor.extractPerdochSIFT(queries[img_idx]);
+                total_kp += num_kp;
+                out_txt << num_kp << " keypoint(s)..";
+                out_txt << "done! (in " << setprecision(2) << fixed << TimeElapse(extractTime) << " s)" << endl;
 
-                // Read vertex count
-                mask_vertex_count = strtoull(line.c_str(), NULL, 0);
+                // Print Info
+                cout << out_txt.str();
 
-                // Preparing mask array
-                float* curr_mask_vertex_x = new float[mask_vertex_count];
-                float* curr_mask_vertex_y = new float[mask_vertex_count];
+                // Keep features
+                extracted_kp[img_idx].swap(sift_extractor.kp);
+                extracted_desc[img_idx].swap(sift_extractor.desc);
+                extracted_imgsize[img_idx] = Size(sift_extractor.width, sift_extractor.height);
 
-                // Read mask vertecies
-                for (size_t mask_idx = 0; mask_idx < mask_vertex_count; mask_idx++)
+                sift_extractor.unlink_kp(); // This will tell sift extractor not to delete kp internally
+                sift_extractor.unlink_desc(); // This will tell sift extractor not to delete desc internally
+
+                // Release memory
+                sift_extractor.Reset();
+            }
+        }
+        cout << "SIFT extracting done! (in " << setprecision(2) << fixed << TimeElapse(totalextractTime) << " s)" << endl;
+
+	    /// Normal extraction and early fusion
+	    if (!run_param.latefusion_enable)
+        {
+            /// Vector quantization
+            bow bow_builder;
+            bow_builder.init(run_param);
+            for (size_t img_idx = 0; img_idx < query_size; img_idx++)
+            {
+                size_t num_kp = extracted_kp[img_idx].size();
+                // Skip if no keypoint detected
+                if (!num_kp)
+                    continue;   // Skip to next query
+
+                cout << "Quantizing.."; cout.flush();
+                startTime = CurrentPreciseTime();
+                // Packing desc data
+                int sift_len = SIFThesaff::GetSIFTD();
+                float* kp_dat = new float[num_kp * sift_len];
+                for (size_t kp_idx = 0; kp_idx < num_kp; kp_idx++)
+                    for (int desc_idx = 0; desc_idx < sift_len; desc_idx++)
+                        kp_dat[kp_idx * sift_len + desc_idx] = extracted_desc[img_idx][kp_idx][desc_idx];
+                Matrix<float> data(kp_dat, num_kp, sift_len);  // size = num_kp x sift_len
+                // Prepare result space
+                Matrix<int> result_index;                           // size = num_kp x knn
+                Matrix<float> result_dist;                          // size = num_kp x knn
+                // Quantization
+                ann.quantize(data, num_kp, result_index, result_dist);
+                cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
+
+                /// BOW building
+                cout << "Building BOW.."; cout.flush();
+                startTime = CurrentPreciseTime();
+                bow_builder.build_bow(result_index.ptr(), extracted_kp[img_idx], 0);    // All frame will be in the same image_id 0, but different sequence_id (multi_bow.size())
+                cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
+
+                /// Visualize full keypoints
+                if (visualize_enable)
+                    visualize_bow(queries[img_idx], queries[img_idx] + ".display.png", bow_builder.get_last_bow(), false);
+
+                /// Masking
+                if (run_param.mask_enable)
                 {
-                    getline(mask_File, line);
+                    int mask_pass = 0;
+                    cout << "Masking.."; cout.flush();
+                    startTime = CurrentPreciseTime();
+                    if (run_param.normpoint)
+                        mask_pass = bow_builder.masking_lastbow(masks[img_idx], extracted_imgsize[img_idx].width, extracted_imgsize[img_idx].height);
+                    else
+                        mask_pass = bow_builder.masking_lastbow(masks[img_idx]);
+                    cout << "[" << yellowc << mask_pass << endc << "/" << bluec << num_kp << endc << "] ";
+                    cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
+                    total_mask_pass += mask_pass;
 
-                    char const* delims = ",";
-                    vector<string> vertex;
-                    string_splitter(line, delims, vertex);
+                    /// Visualize masked keypoints
+                    if (visualize_enable)
+                    {
+                        // Polygon mask overlay
+                        if (check_extension(mask_paths[img_idx], "mask"))
+                        {
+                            vector< vector<Point2f> > polygons;
+                            oxMaskImport(mask_paths[img_idx], polygons);
+                            overlay_mask(queries[img_idx], queries[img_idx] + ".mask.png", polygons, run_param.normpoint);
+                        }
+                        // Image mask overlay
+                        else
+                            overlay_mask(queries[img_idx], queries[img_idx] + ".mask.png", mask_paths[img_idx]);
 
-                    curr_mask_vertex_x[mask_idx] = atof(vertex[0].c_str());
-                    curr_mask_vertex_y[mask_idx] = atof(vertex[1].c_str());
+                        visualize_bow(queries[img_idx] + ".mask.png", queries[img_idx] + ".mask.display.png", bow_builder.get_last_bow(), true);
+                    }
                 }
 
-                // Keep multiple masks
-                mask_vertex_x.push_back(curr_mask_vertex_x);
-                mask_vertex_y.push_back(curr_mask_vertex_y);
+                /// Root bow_sig
+                if (run_param.powerlaw_enable)
+                    bow_builder.rooting_lastbow();
+
+                /// Release memory
+                delete[] kp_dat;
+                delete[] result_index.ptr();
+                delete[] result_dist.ptr();
             }
+            /// Finalizing bow_sig, Internally TF-Normalized
+            vector<bow_bin_object*>& bow_sig = bow_builder.finalize_bow();   // Have new memory of bow_bin_object and reuse memory of feature_object, and kp
 
-            cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
+            /// TF-IDF. Normalize
+            bow_builder.logtf_idf_unitnormalize(bow_sig, idf);
 
-            mask_File.close();
-        }
-
-        cout << "SIFT Hessian Affine extracting..";
-        cout.flush();
-        startTime = CurrentPreciseTime();
-        // Sift Extraction
-        num_kp = 0;
-        SIFThesaff sifthesaff(run_param.colorspace, run_param.normpoint, run_param.rootsift);
-        sifthesaff.extractPerdochSIFT(queries[0]);
-        num_kp = sifthesaff.num_kp;
-        cout << num_kp << " keypoint(s).."; cout.flush();
-        cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
-
-        // Skip if no keypoint detected
-        if (num_kp == 0)
-            return -1;
-
-        // Keep image width, height
-        curr_img_width = sifthesaff.width;
-        curr_img_height = sifthesaff.height;
-
-        cout << "Quantizing..";
-        cout.flush();
-        startTime = CurrentPreciseTime();
-        // Quantization
-        vector<int> currAssign;
-        vector<float> currDistance;
-        vector< vector<float> > currSiftHead;
-        query_quantization(sifthesaff.desc, sifthesaff.kp, currAssign, currDistance);
-        currSiftHead.swap(sifthesaff.kp);
-        cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
-
-        cout << "Building BOW..";
-        cout.flush();
-        startTime = CurrentPreciseTime();
-        // Bow
-		Bow(currAssign, currSiftHead, bow_sig);
-        cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
-
-        // Reset mask memory
-        if (mask_count > 0)
-        {
-            mask_count = 0;
-            mask_vertex_count = 0;
-            for (size_t mask_id = 0; mask_id < mask_vertex_x.size(); mask_id++)
-            {
-                delete[] mask_vertex_x[mask_id];
-                delete[] mask_vertex_y[mask_id];
-            }
-            mask_vertex_x.clear();
-            mask_vertex_y.clear();
-        }
-    }
-
-	// const char* query_dirname = SEARCHROOT "/queries/2012-22-10-18-42-09-93-7686db3bfea96259df596fcc28d8ae3c";
-    // const char* temp_dirname = "/tmpfs/tmp";
-    // const char* sift_extractor = "/home/caizhizhu/caizhizhu/cf/code/compute_descriptors_64bit.ln";
-    // float* bow_sig = get_query_signature(query_dirname, temp_dirname, pQinfo, sift_extractor, true);
-
-	return repID;
-}
-
-void query_quantization(const vector< vector<float> >& desc, const vector< vector<float> >& kp, vector<int>& query_quantized_index, vector<float>& query_quantized_dist)
-{
-    string search_index_path = run_param.database_root_dir + "/" + run_param.dataset_header + "/searchindex";
-
-    //size_t num_kp = desc.size();
-    size_t dimension = desc[0].size();
-
-    // KNN search
-    SearchParams sparams = SearchParams();
-    sparams.checks = 512;
-    sparams.cores = run_param.MAXCPU;
-    size_t knn = 1;
-
-    // Prepare feature vector to be quantized
-    float* current_feature = new float[num_kp * dimension];
-    for (int row = 0; row < num_kp; row++)
-    {
-        for (size_t col = 0; col < dimension; col++)
-        {
-            current_feature[row * dimension + col] = desc[row][col];
-        }
-    }
-
-    // KNN Search
-    Matrix<float> feature_data(current_feature, num_kp, dimension);
-    Matrix<int> result_index(new int[num_kp * knn], num_kp, knn); // size = feature_amount x knn
-    Matrix<float> result_dist(new float[num_kp * knn], num_kp, knn);
-
-    flann_search_index.knnSearch(feature_data, result_index, result_dist, knn, sparams);
-
-    // Keep result
-    int* result_index_idx = result_index.ptr();
-    float* result_dist_idx = result_dist.ptr();
-    // row base result
-    // col is nn number
-    for(size_t col = 0; col < knn; col++)
-    {
-        for(size_t row = 0; row < result_index.rows; row++)
-        {
-            query_quantized_index.push_back(result_index_idx[row * knn + col]);
-            query_quantized_dist.push_back(result_dist_idx[row * knn + col]);
-        }
-    }
-
-    // Release memory
-    delete[] feature_data.ptr();
-    delete[] result_index.ptr();
-    delete[] result_dist.ptr();
-}
-
-void Bow(const vector<int>& query_quantized_indices, const vector< vector<float> >& query_keypoints, vector<bow_bin_object>& bow_sig)
-{
-    // Checking dataset keypoint avalibality
-    if (query_keypoints.size() == 0)
-    {
-        cout << "No dataset keypoint available" << endl;
-        return;
-    }
-    // Checking quantized dataset avalibality
-    if (query_quantized_indices.size() == 0)
-    {
-        cout << "No quantized dataset available" << endl;
-        return;
-    }
-
-    /// Bow gen
-
-    // Initialize blank sparse bow
-    unordered_map<size_t, vector<feature_object> > curr_sparse_bow; // cluster_id, features
-    mask_pass = 0;
-    // Set bow
-    // Add feature to curr_sparse_bow at cluster_id
-    // Frequency of bow is curr_sparse_bow[].size()
-    for (size_t feature_id = 0; feature_id < query_quantized_indices.size(); feature_id++)
-    {
-        // Get cluster from quantizad index of feature
-        size_t cluster_id = query_quantized_indices[feature_id];
-
-        // Create new feature object with feature_id and geo location, x,y,a,b,c
-        feature_object feature;
-        feature.feature_id = feature_id;
-        feature.x = query_keypoints[feature_id][0];
-        feature.y = query_keypoints[feature_id][1];
-        feature.a = query_keypoints[feature_id][2];
-        feature.b = query_keypoints[feature_id][3];
-        feature.c = query_keypoints[feature_id][4];
-
-        // Feature weighting
-        if (mask_count > 0)
-        {
-            // Test if feature locates inside the mask
-            //if ((int)mask_img.at<uchar>(Point ((int)(feature.x * curr_img_width), (int)(feature.y * curr_img_height))) > 0)
-
-            // Hit test with multiple masks
-            bool point_hit = false;
-            for (size_t mask_id = 0; mask_id < mask_count; mask_id++)
-            {
-                if (run_param.normpoint)
-                    point_hit |= pnpoly(mask_vertex_count, mask_vertex_x[mask_id], mask_vertex_y[mask_id], feature.x * curr_img_width, feature.y * curr_img_height);
-                else
-                    point_hit |= pnpoly(mask_vertex_count, mask_vertex_x[mask_id], mask_vertex_y[mask_id], feature.x, feature.y);
-                if (point_hit)
-                    break;
-            }
-
-            if (point_hit)
-            {
-                feature.weight = 1.0f;
-                mask_pass++;
-                //cout << feature.x * curr_img_width << ", " << feature.y * curr_img_height << " passed!" << endl;
-            }
+            /// Write Histogram result
+            // dirname/dirname.bowsig
+            if (run_param.earlyfusion_enable)
+                export_bowsig(get_directory(queries[0]) + "/" + get_filename(get_directory(queries[0])) + ".earlyfused" + run_param.hist_postfix, bow_sig, total_kp, total_mask_pass);
+            // dirname/dirname.earlyfused.bowsig
             else
+                export_bowsig(queries[0] + run_param.hist_postfix, bow_sig, total_kp, total_mask_pass);
+
+            cout << "Total:" << endl;
+            cout << redc << bow_sig.size() << endc << " bin(s)" << endl;
+            cout << yellowc << total_mask_pass << endc << "/" << bluec << total_kp << endc  << " keypoint(s)" << endl;
+
+            total_bin = bow_sig.size();
+
+            /// Dump
+            if (run_param.matching_dump_enable)
             {
-                feature.weight = 0.0f;
-                // if we don't want to use multiple weight for mask, please skip this feature
-                continue;
-                //cout << feature.x * curr_img_width << ", " << feature.y * curr_img_height << " failed!" << endl;
+                // Collect
+                size_t dataset_id = 0;  // Early fusion, query number always 0
+                for (size_t bin_idx = 0; bin_idx < bow_sig.size(); bin_idx++)
+                {
+                    bow_bin_object* bin = bow_sig[bin_idx];
+                    for (size_t feature_idx = 0; feature_idx < bin->features.size(); feature_idx++)
+                        dumper.collect_kp(dataset_id, bin->cluster_id, bin->weight, bin->fg, bin->features[feature_idx]->sequence_id, bin->features[feature_idx]->kp);
+                        // sequence_id already assigned by bow_pooling
+                }
+
+                // Dump
+                dumper.dump(queries[0] + ".query.dump", // Choose query_id 0 as dump name
+                            vector<size_t>{dataset_id},
+                            vector<string>{get_directory(queries[0])},
+                            vector< vector<string> >{vector<string>{get_filename(queries[0])}});
             }
+
+            /// Release memory
+            bow_builder.reset_bow();        // Delete previously allocated memory (bow_bin_object, feature_object, and kp)
+            if (run_param.earlyfusion_enable)       // delete pool if pool was build
+                bow_builder.reset_bow_pool();
         }
-        else // no mask
-        {
-            feature.weight = 1.0f;
-            mask_pass++;
-        }
-
-        // Keep new feature into its corresponding bin (cluster_id)
-        curr_sparse_bow[cluster_id].push_back(feature);
-    }
-    cout << "Total points: " << query_quantized_indices.size() << " Passed: " << mask_pass << ".."; cout.flush();
-
-    /// Make compact bow, with tf-idf frequency
-    for (unordered_map<size_t, vector<feature_object> >::iterator sparse_bow_it = curr_sparse_bow.begin(); sparse_bow_it != curr_sparse_bow.end(); sparse_bow_it++)
-    {
-        // Looking for non-zero bin of cluster,
-        // then put that bin together with specified cluster_id
-        // Create new bin with cluster_id, frequency, and its features
-        bow_bin_object bow_bin;
-        bow_bin.cluster_id = sparse_bow_it->first;
-
-        // Feature weight acculumating
-        float feature_weight = 0.0f;
-        for (size_t feature_id = 0; feature_id < sparse_bow_it->second.size(); feature_id++)
-            feature_weight += sparse_bow_it->second[feature_id].weight;
-
-        // tf-idf
-        if ((int)feature_weight > 0)
-            feature_weight = (1 + log10(feature_weight)) * idf[bow_bin.cluster_id]; // tf*idf = log10(feature_weight) * idf[cluster_id]
+        /// Late fusion
         else
-            continue;   // Skip adding to bow
+        {
+            //int current_num_thread = omp_get_num_threads();
+            //omp_set_dynamic(0);
+            //omp_set_num_threads(4);
+            //#pragma omp parallel shared(total_bin,total_mask_pass,queries,run_param,query_size,extracted_kp,extracted_desc,extracted_imgsize)
+            {
+                /// Feature extraction
+                //#pragma omp for reduction(+ : total_bin,total_mask_pass)
+                for (size_t img_idx = 0; img_idx < query_size; img_idx++)
+                {
+                    size_t num_kp = extracted_kp[img_idx].size();
+                    // Skip if no keypoint detected
+                    if (!num_kp)
+                        continue;   // Skip to next query
 
-        bow_bin.freq = feature_weight;
-        bow_bin.features.swap(sparse_bow_it->second);
+                    stringstream out_txt;
 
-        // Keep new bin into compact_bow
-        bow_sig.push_back(bow_bin);
+                    // BOW
+                    bow bow_builder;
+                    bow_builder.init(run_param);
+
+                    /// Vector quantization
+                    out_txt << "Quantizing.." << img_idx << "/" << query_size << " " << greenc << get_filename(queries[img_idx]) << endc << " ";
+                    timespec quantizeTime = CurrentPreciseTime();
+                    // Packing desc data
+                    int sift_len = SIFThesaff::GetSIFTD();
+                    float* kp_dat = new float[num_kp * sift_len];
+                    for (size_t kp_idx = 0; kp_idx < num_kp; kp_idx++)
+                        for (int desc_idx = 0; desc_idx < sift_len; desc_idx++)
+                            kp_dat[kp_idx * sift_len + desc_idx] = extracted_desc[img_idx][kp_idx][desc_idx];
+                    Matrix<float> data(kp_dat, num_kp, sift_len);  // size = num_kp x sift_len
+                    // Prepare result space
+                    Matrix<int> result_index;                           // size = num_kp x knn
+                    Matrix<float> result_dist;                          // size = num_kp x knn
+                    // Quantization
+                    //omp_set_num_threads(current_num_thread);
+                    ann.quantize(data, num_kp, result_index, result_dist);
+                    //omp_set_num_threads(4);
+                    out_txt << "done! (in " << setprecision(2) << fixed << TimeElapse(quantizeTime) << " s)" << endl;
+
+                    /// BOW building
+                    out_txt << "Building BOW..";
+                    timespec bowTime = CurrentPreciseTime();
+                    bow_builder.build_bow(result_index.ptr(), extracted_kp[img_idx], img_idx);   // All frame all will be assigned to sequence_id 0 (multi_bow only one) but with different image_id
+                    out_txt << "done! (in " << setprecision(2) << fixed << TimeElapse(bowTime) << " s)" << endl;
+
+                    /// Visualize full keypoints
+                    if (visualize_enable)
+                        visualize_bow(queries[img_idx], queries[img_idx] + ".display.png", bow_builder.get_last_bow(), false);
+
+                    /// Masking
+                    int mask_pass = 0;
+                    if (run_param.mask_enable)
+                    {
+                        out_txt << "Masking..";
+                        timespec maskTime = CurrentPreciseTime();
+                        if (run_param.normpoint)
+                            mask_pass = bow_builder.masking_lastbow(masks[img_idx], extracted_imgsize[img_idx].width, extracted_imgsize[img_idx].height);
+                        else
+                            mask_pass = bow_builder.masking_lastbow(masks[img_idx]);
+                        out_txt << "[" << yellowc << mask_pass << endc << "/" << bluec << num_kp << endc << "] ";
+                        out_txt << "done! (in " << setprecision(2) << fixed << TimeElapse(maskTime) << " s)" << endl;
+                        total_mask_pass += mask_pass;
+
+                        /// Visualize masked keypoints
+                        if (visualize_enable)
+                        {
+                            // Polygon mask overlay
+                            if (check_extension(mask_paths[img_idx], "mask"))
+                            {
+                                vector< vector<Point2f> > polygons;
+                                oxMaskImport(mask_paths[img_idx], polygons);
+                                overlay_mask(queries[img_idx], queries[img_idx] + ".mask.png", polygons, run_param.normpoint);
+                            }
+                            // Image mask overlay
+                            else
+                                overlay_mask(queries[img_idx], queries[img_idx] + ".mask.png", mask_paths[img_idx]);
+                            visualize_bow(queries[img_idx] + ".mask.png", queries[img_idx] + ".mask.display.png", bow_builder.get_last_bow(), true);
+                        }
+                    }
+
+                    /// Root bow_sig
+                    if (run_param.powerlaw_enable)
+                        bow_builder.rooting_lastbow();
+
+                    /// Release memory
+                    delete[] kp_dat;
+                    delete[] result_index.ptr();
+                    delete[] result_dist.ptr();
+
+                    /// Finalizing bow_sig, Internally TF-Normalized
+                    vector<bow_bin_object*>& bow_sig = bow_builder.finalize_bow();   // Have new memory of bow_bin_object and reuse memory of feature_object, and kp
+
+                    /// TF-IDF. Normalize
+                    bow_builder.logtf_idf_unitnormalize(bow_sig, idf);
+
+                    /// Write Histogram result
+                    export_bowsig(queries[img_idx] + run_param.hist_postfix, bow_sig, int(num_kp), mask_pass);
+
+                    out_txt << redc << bow_sig.size() << endc << " bin(s)" << endl;
+
+                    total_bin += bow_sig.size();
+
+                    // Print Info
+                    cout << out_txt.str();
+
+                    /// Dump
+                    if (run_param.matching_dump_enable)
+                    {
+                        // Collect
+                        size_t dataset_id = img_idx;  // Late fusion, query numbers are different
+                        for (size_t bin_idx = 0; bin_idx < bow_sig.size(); bin_idx++)
+                        {
+                            bow_bin_object* bin = bow_sig[bin_idx];
+                            for (size_t feature_idx = 0; feature_idx < bin->features.size(); feature_idx++)
+                                dumper.collect_kp(dataset_id, bin->cluster_id, bin->weight, bin->fg, bin->features[feature_idx]->sequence_id, bin->features[feature_idx]->kp);
+                                // sequence_id of late fusion is always 0, sequence_id from bow_pool is already 0
+                        }
+
+                        // Dump
+                        dumper.dump(queries[img_idx] + ".query.dump",
+                                    vector<size_t>{img_idx},
+                                    vector<string>{get_directory(queries[img_idx])},
+                                    vector< vector<string> >{vector<string>{get_filename(queries[img_idx])}});
+                    }
+
+                    /// Release memory
+                    bow_builder.reset_bow();        // Delete previously allocated memory (bow_bin_object, feature_object, and kp)
+                }
+            }
+            //omp_set_dynamic(1);
+
+            cout << "Total:" << endl;
+            cout << redc << total_bin << endc << " bin(s)" << endl;
+            cout << yellowc << total_mask_pass << endc << "/" << bluec << total_kp << endc  << " keypoint(s)" << endl;
+        }
+
+        // Release SIFT memory
+        for (size_t img_idx = 0; img_idx < extracted_desc.size(); img_idx++)
+        {
+            for(size_t desc_idx = 0; desc_idx < extracted_desc[img_idx].size(); desc_idx++)
+                delete[] extracted_desc[img_idx][desc_idx];   // delete only descriptor, since keypoint were used in build bow
+            vector<float*>().swap(extracted_kp[img_idx]);
+            vector<float*>().swap(extracted_desc[img_idx]);
+        }
+		vector< vector<float*> >().swap(extracted_kp);
+		vector< vector<float*> >().swap(extracted_desc);
+		vector<Size>().swap(extracted_imgsize);
+
+        return total_bin;
     }
-
-    /// Normalization
-    // Unit length
-    float sum_of_square = 0.0f;
-    float unit_length = 0.0f;
-    for (size_t bin_idx = 0; bin_idx < bow_sig.size(); bin_idx++)
-        sum_of_square += bow_sig[bin_idx].freq * bow_sig[bin_idx].freq;
-    unit_length = sqrt(sum_of_square);
-
-    // Normalizing
-    for (size_t bin_idx = 0; bin_idx < bow_sig.size(); bin_idx++)
-        bow_sig[bin_idx].freq = bow_sig[bin_idx].freq / unit_length;
 }
 
-bool export_hist(const string& out, const vector<bow_bin_object>& bow_hist)
+bool export_bowsig(const string& out, const vector<bow_bin_object*>& bow_sig, int num_kp, int mask_pass)
 {
     bool ret = true;
-    ofstream bow_hist_File (out.c_str(), ios::binary);
-    ret &= lockfile(out);
-    if (ret &= bow_hist_File.is_open())
+    ofstream OutFile(out.c_str(), ios::binary);
+    if (ret &= OutFile.is_open())
     {
-        // Write non-zero count
-        size_t bin_count = bow_hist.size();
-        bow_hist_File.write(reinterpret_cast<char*>(&bin_count), sizeof(bin_count));
-        //cout << bin_count << endl;
+        // Non-zero count
+        size_t bin_count = bow_sig.size();
+        OutFile.write(reinterpret_cast<char*>(&bin_count), sizeof(bin_count));
 
+        // Bin
         for (size_t bin_id = 0; bin_id < bin_count; bin_id++)
         {
-            // Write cluster_id
-            size_t cluster_id = bow_hist[bin_id].cluster_id;
-            bow_hist_File.write(reinterpret_cast<char*>(&cluster_id), sizeof(cluster_id));
-            //cout << cluster_id << endl;
+            // Cluster ID
+            size_t cluster_id = bow_sig[bin_id]->cluster_id;
+            OutFile.write(reinterpret_cast<char*>(&cluster_id), sizeof(cluster_id));
 
-            // Write freq
-            float freq = bow_hist[bin_id].freq;
-            bow_hist_File.write(reinterpret_cast<char*>(&freq), sizeof(freq));
-            //cout << freq << endl;
+            // Weight
+            float weight = bow_sig[bin_id]->weight;
+            OutFile.write(reinterpret_cast<char*>(&weight), sizeof(weight));
 
-            // Write feature_count
-            size_t feature_count = bow_hist[bin_id].features.size();
-            bow_hist_File.write(reinterpret_cast<char*>(&feature_count), sizeof(feature_count));
-            //cout << feature_count << endl;
+            // Foreground flag
+            bool fg = bow_sig[bin_id]->fg;
+            OutFile.write(reinterpret_cast<char*>(&fg), sizeof(fg));
 
-            for (size_t feature_id = 0; feature_id < feature_count; feature_id++)
+            // Feature Count
+            size_t feature_count = bow_sig[bin_id]->features.size();
+            OutFile.write(reinterpret_cast<char*>(&feature_count), sizeof(feature_count));
+
+            int head_size = SIFThesaff::GetSIFTHeadSize();
+            for (size_t bow_feature_id = 0; bow_feature_id < feature_count; bow_feature_id++)
             {
-                // write feature (x,y,a,b,c)
-                feature_object curr_feature = bow_hist[bin_id].features[feature_id];
-                /*float x = curr_feature.x;
-                float y = curr_feature.y;
-                float a = curr_feature.a;
-                float b = curr_feature.b;
-                float c = curr_feature.c;
-                cout << x << " " << y << " " << a << " " << b << " " << c << endl;*/
-                bow_hist_File.write(reinterpret_cast<char*>(&(curr_feature.x)), sizeof(curr_feature.x));
-                bow_hist_File.write(reinterpret_cast<char*>(&(curr_feature.y)), sizeof(curr_feature.y));
-                bow_hist_File.write(reinterpret_cast<char*>(&(curr_feature.a)), sizeof(curr_feature.a));
-                bow_hist_File.write(reinterpret_cast<char*>(&(curr_feature.b)), sizeof(curr_feature.b));
-                bow_hist_File.write(reinterpret_cast<char*>(&(curr_feature.c)), sizeof(curr_feature.c));
+                // Write all features from bin
+                feature_object* feature = bow_sig[bin_id]->features[bow_feature_id];
+                // Image ID
+                OutFile.write(reinterpret_cast<char*>(&(feature->image_id)), sizeof(feature->image_id));
+                // Sequence ID
+                OutFile.write(reinterpret_cast<char*>(&(feature->sequence_id)), sizeof(feature->sequence_id));
+                /*
+                // Weight (asymmetric weight)
+                OutFile.write(reinterpret_cast<char*>(&(feature->weight)), sizeof(feature->weight));
+                */
+                // x y a b c
+                OutFile.write(reinterpret_cast<char*>(feature->kp), head_size * sizeof(*(feature->kp)));
             }
-
         }
 
         // Write num_kp
-        bow_hist_File.write(reinterpret_cast<char*>(&num_kp), sizeof(num_kp));
+        OutFile.write(reinterpret_cast<char*>(&num_kp), sizeof(num_kp));
 
         // Write mask_pass
-        bow_hist_File.write(reinterpret_cast<char*>(&mask_pass), sizeof(mask_pass));
+        OutFile.write(reinterpret_cast<char*>(&mask_pass), sizeof(mask_pass));
 
         // Close file
-        bow_hist_File.close();
+        OutFile.close();
     }
 
-    ret &= unlockfile(out);
+    ofstream OkFile((out + ".ok").c_str(), ios::binary);
+    OkFile.close();
 
     return ret;
 }
+
+void visualize_bow(const string& in_img, const string& out_img, const vector<bow_bin_object*>& bow_sig, const bool checkmask)
+{
+    vector<SIFT_Keypoint> keypoints;
+    for (size_t bow_idx = 0; bow_idx < bow_sig.size(); bow_idx++)
+    {
+        // Draw only foreground
+        if (!checkmask || bow_sig[bow_idx]->fg)
+        {
+            for (size_t feature_idx = 0; feature_idx < bow_sig[bow_idx]->features.size(); feature_idx++)
+            {
+                float* kp = bow_sig[bow_idx]->features[feature_idx]->kp;
+                keypoints.push_back(SIFT_Keypoint{kp[0], kp[1], kp[2], kp[3], kp[4]});
+            }
+        }
+    }
+    draw_sifts(in_img, out_img, keypoints, DRAW_POINT, run_param.colorspace, run_param.normpoint, run_param.rootsift);
+}
+
+// Misc
+void oxMaskImport(const string& mask_path, vector< vector<Point2f> >& polygons)
+{
+    /// Read Mask as a polygon
+    // Load mask
+    ifstream mask_File (mask_path.c_str());
+    if (mask_File)
+    {
+        cout << "Reading mask..";
+        cout.flush();
+        startTime = CurrentPreciseTime();
+
+        string line;
+        getline(mask_File, line);
+
+        // Read mask count
+        size_t mask_count = strtoull(line.c_str(), NULL, 0);
+
+        for (size_t mask_id = 0; mask_id < mask_count; mask_id++)
+        {
+            getline(mask_File, line);
+
+            // Read vertex count
+            size_t mask_vertex_count = strtoull(line.c_str(), NULL, 0);
+
+            // Preparing mask array
+            vector<Point2f> curr_mask_polygon;
+
+            // Read mask vertecies
+            for (size_t mask_idx = 0; mask_idx < mask_vertex_count; mask_idx++)
+            {
+                getline(mask_File, line);
+
+                vector<string> vertex;
+                StringExplode(line, ",", vertex);
+
+                curr_mask_polygon.push_back(Point2f(atof(vertex[0].c_str()), atof(vertex[1].c_str())));
+            }
+
+            // Keep multiple masks
+            polygons.push_back(curr_mask_polygon);
+        }
+
+        cout << "done! (in " << setprecision(2) << fixed << TimeElapse(startTime) << " s)" << endl;
+
+        mask_File.close();
+    }
+}
+
+// Memory management
 //;)
