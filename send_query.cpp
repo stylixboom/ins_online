@@ -12,7 +12,7 @@
 #include <vector>
 #include <bitset>
 #include <unistd.h> // usleep
-#include <tr1/unordered_map>
+#include <unordered_map>
 
 #include "../lib/alphautils/alphautils.h"
 
