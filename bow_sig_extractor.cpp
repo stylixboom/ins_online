@@ -510,7 +510,7 @@ size_t extract_bowsig(const string& session_id)
                 sift_extractor.unlink_desc(); // This will tell sift extractor not to delete desc internally
 
                 // Release memory
-                sift_extractor.Reset();
+                sift_extractor.reset();
             }
         }
         cout << "SIFT extracting done! (in " << setprecision(2) << fixed << TimeElapse(totalextractTime) << " s)" << endl;
@@ -860,7 +860,7 @@ bool export_bowsig(const string& out, const vector<bow_bin_object*>& bow_sig, in
 
 void visualize_bow(const string& in_img, const string& out_img, const vector<bow_bin_object*>& bow_sig, const bool checkmask)
 {
-    vector<SIFT_Keypoint> keypoints;
+    vector<INS_KP> keypoints;
     for (size_t bow_idx = 0; bow_idx < bow_sig.size(); bow_idx++)
     {
         // Draw only foreground
@@ -869,11 +869,15 @@ void visualize_bow(const string& in_img, const string& out_img, const vector<bow
             for (size_t feature_idx = 0; feature_idx < bow_sig[bow_idx]->features.size(); feature_idx++)
             {
                 float* kp = bow_sig[bow_idx]->features[feature_idx]->kp;
-                keypoints.push_back(SIFT_Keypoint{kp[0], kp[1], kp[2], kp[3], kp[4]});
+                keypoints.push_back(INS_KP{kp[0], kp[1], kp[2], kp[3], kp[4]});
             }
         }
     }
-    draw_sifts(in_img, out_img, keypoints, DRAW_POINT, run_param.colorspace, run_param.normpoint, run_param.rootsift);
+	if (run_param.feature_type == FEAT_SIFTHESAFF)
+	{
+		SIFThesaff sift_obj;
+		sift_obj.draw_sifts(in_img, out_img, keypoints, DRAW_POINT, run_param.colorspace, run_param.normpoint, run_param.rootsift);
+	}
 }
 
 // Misc
