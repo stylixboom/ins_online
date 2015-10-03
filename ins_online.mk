@@ -5,8 +5,8 @@
 ## Release
 ProjectName            :=ins_online
 ConfigurationName      :=Release
-WorkspacePath          := "/home/stylix/Dropbox/MyDocument/SokendaiCourse/Researches/Workspace/code"
-ProjectPath            := "/home/stylix/Dropbox/MyDocument/SokendaiCourse/Researches/Workspace/code/ins_online"
+WorkspacePath          := "${HOME}/webstylix/code"
+ProjectPath            := "${HOME}/webstylix/code/ins_online"
 IntermediateDirectory  :=./Release
 OutDir                 := $(IntermediateDirectory)
 CurrentFileName        :=
@@ -14,7 +14,7 @@ CurrentFilePath        :=
 CurrentFileFullPath    :=
 User                   :=Siriwat Kasamwattanarote
 Date                   :=02/10/15
-CodeLitePath           :="/home/stylix/Dropbox/MyDocument/SokendaiCourse/Researches/Workspace/configurations/.codelite"
+CodeLitePath           :="${HOME}/webstylix/configurations/.codelite"
 LinkerName             :=g++
 SharedObjectLinkerName :=g++ -shared -fPIC
 ObjectSuffix           :=.o
@@ -36,12 +36,12 @@ ObjectsFileList        :="ins_online.txt"
 PCHCompileFlags        :=
 MakeDirCommand         :=mkdir -p
 LinkOptions            :=  `pkg-config opencv --libs` `pkg-config --libs lapacke`
-IncludePath            :=  $(IncludeSwitch). $(IncludeSwitch)/home/stylix/local/include 
+IncludePath            :=  $(IncludeSwitch). $(IncludeSwitch)${HOME}/local/include 
 IncludePCH             := 
 RcIncludePath          := 
 Libs                   := $(LibrarySwitch)ins $(LibrarySwitch)sifthesaff $(LibrarySwitch)alphautils $(LibrarySwitch)opencv_core $(LibrarySwitch)opencv_features2d $(LibrarySwitch)opencv_highgui $(LibrarySwitch)x264 $(LibrarySwitch)faac $(LibrarySwitch)ransac $(LibrarySwitch)lapacke $(LibrarySwitch)lapack $(LibrarySwitch)blas $(LibrarySwitch)tmglib $(LibrarySwitch)hdf5 $(LibrarySwitch)hdf5_hl_cpp $(LibrarySwitch)hdf5_cpp $(LibrarySwitch)hdf5_hl $(LibrarySwitch)mpi_cxx $(LibrarySwitch)mpi $(LibrarySwitch)rt $(LibrarySwitch)gomp $(LibrarySwitch)pthread $(LibrarySwitch)dl 
 ArLibs                 :=  "libins.a" "libsifthesaff.a" "libalphautils.a" "opencv_core" "opencv_features2d" "opencv_highgui" "x264" "faac" "libransac.a" "lapacke" "lapack" "blas" "tmglib" "hdf5" "hdf5_hl_cpp" "hdf5_cpp" "hdf5_hl" "mpi_cxx" "mpi" "rt" "gomp" "pthread" "dl" 
-LibPath                := $(LibraryPathSwitch). $(LibraryPathSwitch)/home/stylix/local/lib $(LibraryPathSwitch)../lib/ins/$(ConfigurationName) $(LibraryPathSwitch)../lib/sifthesaff/$(ConfigurationName) $(LibraryPathSwitch)../lib/alphautils/$(ConfigurationName) $(LibraryPathSwitch)../lib/ransac/$(ConfigurationName) 
+LibPath                := $(LibraryPathSwitch). $(LibraryPathSwitch)${HOME}/local/lib $(LibraryPathSwitch)../lib/ins/$(ConfigurationName) $(LibraryPathSwitch)../lib/sifthesaff/$(ConfigurationName) $(LibraryPathSwitch)../lib/alphautils/$(ConfigurationName) $(LibraryPathSwitch)../lib/ransac/$(ConfigurationName) 
 
 ##
 ## Common variables
@@ -92,7 +92,7 @@ PreBuild:
 ## Objects
 ##
 $(IntermediateDirectory)/ins_online.cpp$(ObjectSuffix): ins_online.cpp $(IntermediateDirectory)/ins_online.cpp$(DependSuffix)
-	$(CXX) $(IncludePCH) $(SourceSwitch) "/home/stylix/Dropbox/MyDocument/SokendaiCourse/Researches/Workspace/code/ins_online/ins_online.cpp" $(CXXFLAGS) $(ObjectSwitch)$(IntermediateDirectory)/ins_online.cpp$(ObjectSuffix) $(IncludePath)
+	$(CXX) $(IncludePCH) $(SourceSwitch) "${HOME}/webstylix/code/ins_online/ins_online.cpp" $(CXXFLAGS) $(ObjectSwitch)$(IntermediateDirectory)/ins_online.cpp$(ObjectSuffix) $(IncludePath)
 $(IntermediateDirectory)/ins_online.cpp$(DependSuffix): ins_online.cpp
 	@$(CXX) $(CXXFLAGS) $(IncludePCH) $(IncludePath) -MG -MP -MT$(IntermediateDirectory)/ins_online.cpp$(ObjectSuffix) -MF$(IntermediateDirectory)/ins_online.cpp$(DependSuffix) -MM "ins_online.cpp"
 
