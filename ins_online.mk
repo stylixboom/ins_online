@@ -72,33 +72,11 @@ Objects=$(Objects0)
 .PHONY: all clean PreBuild PrePreBuild PostBuild MakeIntermediateDirs
 all: $(OutputFile)
 
-$(OutputFile): $(IntermediateDirectory)/.d "../.build-release/ransac" "../.build-release/sifthesaff" "../.build-release/alphautils" "../.build-release/ins" $(Objects) 
+$(OutputFile): $(IntermediateDirectory)/.d $(Objects) 
 	@$(MakeDirCommand) $(@D)
 	@echo "" > $(IntermediateDirectory)/.d
 	@echo $(Objects0)  > $(ObjectsFileList)
 	$(LinkerName) $(OutputSwitch)$(OutputFile) @$(ObjectsFileList) $(LibPath) $(Libs) $(LinkOptions)
-
-"../.build-release/ransac":
-	@$(MakeDirCommand) "../.build-release"
-	@echo stam > "../.build-release/ransac"
-
-
-"../.build-release/sifthesaff":
-	@$(MakeDirCommand) "../.build-release"
-	@echo stam > "../.build-release/sifthesaff"
-
-
-"../.build-release/alphautils":
-	@$(MakeDirCommand) "../.build-release"
-	@echo stam > "../.build-release/alphautils"
-
-
-"../.build-release/ins":
-	@$(MakeDirCommand) "../.build-release"
-	@echo stam > "../.build-release/ins"
-
-
-
 
 MakeIntermediateDirs:
 	@test -d ./Release || $(MakeDirCommand) ./Release
