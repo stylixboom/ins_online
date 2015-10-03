@@ -28,6 +28,7 @@
 #include "../lib/alphautils/imtools.h"
 #include "../lib/alphautils/hdf5_io.h"
 #include "../lib/sifthesaff/SIFThesaff.h"
+#include "../lib/orb/orb.h"
 #include "../lib/ins/ins_param.h"
 #include "../lib/ins/invert_index.h"
 #include "../lib/ins/bow.h"
@@ -39,15 +40,6 @@
 #include "../lib/ins/compat.hpp"
 
 #include "bow_sig_extractor.h"
-
-using namespace std;
-using namespace ::flann;
-using namespace alphautils;
-using namespace alphautils::imtools;
-using namespace alphautils::hdf5io;
-using namespace ins;
-using namespace cv;
-
 
 using namespace std;
 using namespace ::flann;
@@ -473,12 +465,18 @@ size_t extract_bowsig(const string& session_id)
 	/// Normal feature extraction
 	else
 	{
-	    // SIFT memory
+	    // Features memory
 	    size_t query_size = queries.size();
 	    vector< vector<float*> > extracted_kp(query_size);
 	    vector< vector<float*> > extracted_desc(query_size);
 	    vector<Size> extracted_imgsize(query_size);
-	    cout << "SIFT Hessian Affine extracting.." << endl;
+	    cout << "Feature extracting ";
+		// SIFThesaff
+		if (run_param.feature_type == FEAT_SIFTHESAFF)
+			cout << "[SIFThesaff].." << endl;
+		// ORB
+		else
+			cout << "[ORB].." << endl;
 	    timespec totalextractTime = CurrentPreciseTime();
 	    /// Parallel extracting
         #pragma omp parallel shared(total_kp,queries,run_param,query_size,extracted_kp,extracted_desc,extracted_imgsize)
@@ -489,31 +487,61 @@ size_t extract_bowsig(const string& session_id)
             {
                 stringstream out_txt;
                 out_txt << img_idx << "/" << query_size << " " << greenc << get_filename(queries[img_idx]) << endc << " ";
-                SIFThesaff sift_extractor;
-                sift_extractor.init(run_param.colorspace, run_param.normpoint, run_param.rootsift);
-                timespec extractTime = CurrentPreciseTime();
-                // Sift Extraction
-                int num_kp = sift_extractor.extractPerdochSIFT(queries[img_idx]);
-                total_kp += num_kp;
-                out_txt << num_kp << " keypoint(s)..";
-                out_txt << "done! (in " << setprecision(2) << fixed << TimeElapse(extractTime) << " s)" << endl;
+				// SIFThesaff
+				if (run_param.feature_type == FEAT_SIFTHESAFF)
+				{
+					SIFThesaff sift_extractor;
+					sift_extractor.init(run_param.colorspace, run_param.normpoint, run_param.rootsift);
+					timespec extractTime = CurrentPreciseTime();
+					// Sift Extraction
+					int num_kp = sift_extractor.extractPerdochSIFT(queries[img_idx]);
+					total_kp += num_kp;
+					out_txt << num_kp << " keypoint(s)..";
+					out_txt << "done! (in " << setprecision(2) << fixed << TimeElapse(extractTime) << " s)" << endl;
 
-                // Print Info
-                cout << out_txt.str();
+					// Print Info
+					cout << out_txt.str();
 
-                // Keep features
-                extracted_kp[img_idx].swap(sift_extractor.kp);
-                extracted_desc[img_idx].swap(sift_extractor.desc);
-                extracted_imgsize[img_idx] = Size(sift_extractor.width, sift_extractor.height);
+					// Keep features
+					extracted_kp[img_idx].swap(sift_extractor.kp);
+					extracted_desc[img_idx].swap(sift_extractor.desc);
+					extracted_imgsize[img_idx] = Size(sift_extractor.width, sift_extractor.height);
 
-                sift_extractor.unlink_kp(); // This will tell sift extractor not to delete kp internally
-                sift_extractor.unlink_desc(); // This will tell sift extractor not to delete desc internally
+					sift_extractor.unlink_kp(); // This will tell sift extractor not to delete kp internally
+					sift_extractor.unlink_desc(); // This will tell sift extractor not to delete desc internally
 
-                // Release memory
-                sift_extractor.reset();
+					// Release memory
+					sift_extractor.reset();
+				}
+				// ORB
+				else
+				{
+					orb orb_extractor;
+					orb_extractor.init(run_param.colorspace, run_param.normpoint);
+					timespec extractTime = CurrentPreciseTime();
+					// ORB Extraction
+					int num_kp = orb_extractor.extract(queries[img_idx]);
+					total_kp += num_kp;
+					out_txt << num_kp << " keypoint(s)..";
+					out_txt << "done! (in " << setprecision(2) << fixed << TimeElapse(extractTime) << " s)" << endl;
+
+					// Print Info
+					cout << out_txt.str();
+
+					// Keep features
+					extracted_kp[img_idx].swap(orb_extractor.kp);
+					extracted_desc[img_idx].swap(orb_extractor.desc);
+					extracted_imgsize[img_idx] = Size(orb_extractor.width, orb_extractor.height);
+
+					orb_extractor.unlink_kp(); // This will tell orb extractor not to delete kp internally
+					orb_extractor.unlink_desc(); // This will tell orb extractor not to delete desc internally
+
+					// Release memory
+					orb_extractor.reset();
+				}
             }
         }
-        cout << "SIFT extracting done! (in " << setprecision(2) << fixed << TimeElapse(totalextractTime) << " s)" << endl;
+        cout << "Feature extraction done! (in " << setprecision(2) << fixed << TimeElapse(totalextractTime) << " s)" << endl;
 
 	    /// Normal extraction and early fusion
 	    if (!run_param.latefusion_enable)
@@ -531,12 +559,16 @@ size_t extract_bowsig(const string& session_id)
                 cout << "Quantizing.."; cout.flush();
                 startTime = CurrentPreciseTime();
                 // Packing desc data
-                int sift_len = SIFThesaff::GetSIFTD();
-                float* kp_dat = new float[num_kp * sift_len];
+                int dim = 0;
+				if (run_param.feature_type == FEAT_SIFTHESAFF)
+					dim = SIFThesaff::GetSIFTD();
+				else
+					dim = orb::GetORBD();
+                float* kp_dat = new float[num_kp * dim];
                 for (size_t kp_idx = 0; kp_idx < num_kp; kp_idx++)
-                    for (int desc_idx = 0; desc_idx < sift_len; desc_idx++)
-                        kp_dat[kp_idx * sift_len + desc_idx] = extracted_desc[img_idx][kp_idx][desc_idx];
-                Matrix<float> data(kp_dat, num_kp, sift_len);  // size = num_kp x sift_len
+                    for (int desc_idx = 0; desc_idx < dim; desc_idx++)
+                        kp_dat[kp_idx * dim + desc_idx] = extracted_desc[img_idx][kp_idx][desc_idx];
+                Matrix<float> data(kp_dat, num_kp, dim);  			// size = num_kp x dim
                 // Prepare result space
                 Matrix<int> result_index;                           // size = num_kp x knn
                 Matrix<float> result_dist;                          // size = num_kp x knn
@@ -667,12 +699,16 @@ size_t extract_bowsig(const string& session_id)
                     out_txt << "Quantizing.." << img_idx << "/" << query_size << " " << greenc << get_filename(queries[img_idx]) << endc << " ";
                     timespec quantizeTime = CurrentPreciseTime();
                     // Packing desc data
-                    int sift_len = SIFThesaff::GetSIFTD();
-                    float* kp_dat = new float[num_kp * sift_len];
+                    int dim = 0;
+					if (run_param.feature_type == FEAT_SIFTHESAFF)
+						dim = SIFThesaff::GetSIFTD();
+					else
+						dim = orb::GetORBD();
+                    float* kp_dat = new float[num_kp * dim];
                     for (size_t kp_idx = 0; kp_idx < num_kp; kp_idx++)
-                        for (int desc_idx = 0; desc_idx < sift_len; desc_idx++)
-                            kp_dat[kp_idx * sift_len + desc_idx] = extracted_desc[img_idx][kp_idx][desc_idx];
-                    Matrix<float> data(kp_dat, num_kp, sift_len);  // size = num_kp x sift_len
+                        for (int desc_idx = 0; desc_idx < dim; desc_idx++)
+                            kp_dat[kp_idx * dim + desc_idx] = extracted_desc[img_idx][kp_idx][desc_idx];
+                    Matrix<float> data(kp_dat, num_kp, dim);  			// size = num_kp x dim
                     // Prepare result space
                     Matrix<int> result_index;                           // size = num_kp x knn
                     Matrix<float> result_dist;                          // size = num_kp x knn
@@ -779,7 +815,7 @@ size_t extract_bowsig(const string& session_id)
             cout << yellowc << total_mask_pass << endc << "/" << bluec << total_kp << endc  << " keypoint(s)" << endl;
         }
 
-        // Release SIFT memory
+        // Release feature memory
         for (size_t img_idx = 0; img_idx < extracted_desc.size(); img_idx++)
         {
             for(size_t desc_idx = 0; desc_idx < extracted_desc[img_idx].size(); desc_idx++)
@@ -824,7 +860,11 @@ bool export_bowsig(const string& out, const vector<bow_bin_object*>& bow_sig, in
             size_t feature_count = bow_sig[bin_id]->features.size();
             OutFile.write(reinterpret_cast<char*>(&feature_count), sizeof(feature_count));
 
-            int head_size = SIFThesaff::GetSIFTHeadSize();
+            int head_size = 0;
+			if (run_param.feature_type == FEAT_SIFTHESAFF)
+				head_size = SIFThesaff::GetSIFTHeadSize();
+			else
+				head_size = orb::GetORBHeadSize();
             for (size_t bow_feature_id = 0; bow_feature_id < feature_count; bow_feature_id++)
             {
                 // Write all features from bin
@@ -873,10 +913,17 @@ void visualize_bow(const string& in_img, const string& out_img, const vector<bow
             }
         }
     }
+	// SIFThesaff
 	if (run_param.feature_type == FEAT_SIFTHESAFF)
 	{
 		SIFThesaff sift_obj;
 		sift_obj.draw_sifts(in_img, out_img, keypoints, DRAW_POINT, run_param.colorspace, run_param.normpoint, run_param.rootsift);
+	}
+	// ORB
+	else
+	{
+		orb orb_obj;
+		orb_obj.draw_feats(in_img, out_img, keypoints, DRAW_POINT, run_param.colorspace, run_param.normpoint);
 	}
 }
 
