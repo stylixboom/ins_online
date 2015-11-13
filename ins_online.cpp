@@ -935,11 +935,13 @@ float search_by_id(const int q_id)
     // [/home/stylix/webstylix/code/ins_online/query/oxbuildings5k_sifthesaff-rgb-norm-root_akm_1000000_kd3_16_qscale_r80_mask_roi_qbootstrap2_18_f2_qbmining_5_report]/[balliol_5]/[oxford_001753.jpg]
 
     /// Preparing queries source path
-    if (str_contains(run_param.dataset_prefix, "oxbuildings105k") ||
+    if (str_contains(run_param.dataset_prefix, "oxbuildings1m") ||
+		str_contains(run_param.dataset_prefix, "oxbuildings105k") ||
         str_contains(run_param.dataset_prefix, "oxbuildings5k") ||
         str_contains(run_param.dataset_prefix, "paris6k"))
     {
-        if (str_contains(run_param.dataset_prefix, "oxbuildings105k"))                                                              /// Oxford105k query system
+        if (str_contains(run_param.dataset_prefix, "oxbuildings1m") ||																/// Oxford1m/105k query system
+			str_contains(run_param.dataset_prefix, "oxbuildings105k"))                                                              /// will be directed to 5k system
         {
             source_queries.push_back(run_param.dataset_root_dir + "/" + "oxbuildings/5k" + "/" + QueryImgLists[q_id][0]);           // source query
             // [/home/stylix/webstylix/code/dataset]/[oxbuildings/5k]/[oxford_001753.jpg]
@@ -1024,7 +1026,10 @@ float search_by_id(const int q_id)
     if (run_param.mask_enable)
     {
         /// Preparing mask (oxford mask, one mask per query)
-        if (str_contains(run_param.dataset_prefix, "oxbuildings105k") || str_contains(run_param.dataset_prefix, "oxbuildings5k") || str_contains(run_param.dataset_prefix, "paris6k"))
+        if (str_contains(run_param.dataset_prefix, "oxbuildings1m") ||
+			str_contains(run_param.dataset_prefix, "oxbuildings105k") ||
+			str_contains(run_param.dataset_prefix, "oxbuildings5k") ||
+			str_contains(run_param.dataset_prefix, "paris6k"))
         {
             if (run_param.mask_enable && run_param.mask_mode == MASK_ROI)
             {
@@ -2790,7 +2795,9 @@ void Evaluate()
     rotate_eval = true;
 
     /// Oxford building dataset
-    if (str_contains(run_param.dataset_prefix, "oxbuildings") || str_contains(run_param.dataset_prefix, "paris") || str_contains(run_param.dataset_prefix, "smalltest"))
+    if (str_contains(run_param.dataset_prefix, "oxbuildings") ||
+		str_contains(run_param.dataset_prefix, "paris") ||
+		str_contains(run_param.dataset_prefix, "smalltest"))
     {
         float sum_map = 0.0f;
         float avg_map = 0.0f;
@@ -2874,7 +2881,8 @@ void CheckGroundtruth(vector<result_object>& result, const int q_id)
     size_t result_size = result.size();
 
     /// OX 5k
-    if (str_contains(run_param.dataset_prefix, "oxbuildings105k") ||
+    if (str_contains(run_param.dataset_prefix, "oxbuildings1m") ||
+		str_contains(run_param.dataset_prefix, "oxbuildings105k") ||
         str_contains(run_param.dataset_prefix, "oxbuildings5k") ||
         str_contains(run_param.dataset_prefix, "paris6k"))
     {
@@ -2906,7 +2914,9 @@ float Compute_map(const string& query_topic)
 {
     stringstream cmd;
 
-    if (str_contains(run_param.dataset_prefix, "oxbuildings") || str_contains(run_param.dataset_prefix, "paris") || str_contains(run_param.dataset_prefix, "smalltest"))
+    if (str_contains(run_param.dataset_prefix, "oxbuildings") ||
+		str_contains(run_param.dataset_prefix, "paris") ||
+		str_contains(run_param.dataset_prefix, "smalltest"))
     {
         string ap_binary = run_param.code_root_dir + "/ox_ap/bin/Release/ox_ap";
 
