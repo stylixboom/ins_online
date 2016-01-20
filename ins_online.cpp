@@ -456,6 +456,7 @@ void LoadQueryPreset()
 
     if (str_contains(run_param.dataset_prefix, "oxbuildings") ||
         str_contains(run_param.dataset_prefix, "paris") ||
+		str_contains(run_param.dataset_prefix, "stanford-mvs") ||
         str_contains(run_param.dataset_prefix, "smalltest"))
     {
         stringstream groundtruth_path;
@@ -507,7 +508,7 @@ void LoadQueryPreset()
                         // Query image
                         if (str_contains(run_param.dataset_prefix, "oxbuildings"))                              // oxfordbuildings
                             QueryImgLists.back().push_back(str_replace_first(query_split[0], "oxc1_", "") + ".jpg");
-                        else                                                                                    // paris
+                        else                                                                                    // paris, stanford-mvs
                             QueryImgLists.back().push_back(query_split[0] + ".jpg");
 
                         // oxford mask template reader
@@ -935,10 +936,9 @@ float search_by_id(const int q_id)
     // [/home/stylix/webstylix/code/ins_online/query/oxbuildings5k_sifthesaff-rgb-norm-root_akm_1000000_kd3_16_qscale_r80_mask_roi_qbootstrap2_18_f2_qbmining_5_report]/[balliol_5]/[oxford_001753.jpg]
 
     /// Preparing queries source path
-    if (str_contains(run_param.dataset_prefix, "oxbuildings1m") ||
-		str_contains(run_param.dataset_prefix, "oxbuildings105k") ||
-        str_contains(run_param.dataset_prefix, "oxbuildings5k") ||
-        str_contains(run_param.dataset_prefix, "paris6k"))
+    if (str_contains(run_param.dataset_prefix, "oxbuildings") ||
+        str_contains(run_param.dataset_prefix, "paris") ||
+		str_contains(run_param.dataset_prefix, "stanford-mvs"))
     {
         if (str_contains(run_param.dataset_prefix, "oxbuildings1m") ||																/// Oxford1m/105k query system
 			str_contains(run_param.dataset_prefix, "oxbuildings105k"))                                                              /// will be directed to 5k system
@@ -949,16 +949,34 @@ float search_by_id(const int q_id)
         else if (str_contains(run_param.dataset_prefix, "oxbuildings5k"))                                                           /// Oxford5k query system
         {
             source_queries.push_back(run_param.dataset_path + "/" + QueryImgLists[q_id][0]);                                        // source query
-            // [/home/stylix/webstylix/code/dataset]/[oxbuildings/5k]/[oxford_001753.jpg]
+            // [/home/stylix/webstylix/code/dataset/oxbuildings/5k]/[oxford_001753.jpg]
         }
+		else if (str_contains(run_param.dataset_prefix, "paris1m"))                                                                 /// Paris1m query system
+		{
+			vector<string> query_image_split;
+            StringExplode(QueryImgLists[q_id][0], "_", query_image_split);            
+			source_queries.push_back(run_param.dataset_root_dir + "/" + "paris/6k" + "/" + query_image_split[1] + "/" + QueryImgLists[q_id][0]);// source query
+            // [/home/stylix/webstylix/code/dataset]/[paris/6k]/[invalides]/[paris_invalides_000360.jpg]
+		}
         else if (str_contains(run_param.dataset_prefix, "paris6k"))                                                                 /// Paris6k query system
         {
             vector<string> query_image_split;
             StringExplode(QueryImgLists[q_id][0], "_", query_image_split);
             source_queries.push_back(run_param.dataset_path + "/" + query_image_split[1] + "/" + QueryImgLists[q_id][0]);           // source query
-            // [/home/stylix/webstylix/code/dataset]/[paris/6k]/[invalides]/[paris_invalides_000360.jpg]
+            // [/home/stylix/webstylix/code/dataset/paris/6k]/[invalides]/[paris_invalides_000360.jpg]
         }
-        queries.push_back(query_search_path + "/" + QueryImgLists[q_id][0]);                                                        // destination query
+		else if (str_contains(run_param.dataset_prefix, "stanford-mvs"))															/// Stanford MVS
+		{
+			source_queries.push_back(run_param.dataset_path + "/groundtruth/" + QueryImgLists[q_id][0]);							// source query
+			// [/home/stylix/webstylix/code/dataset/stanford/stanford-mvs-nii/book_covers][/groundtruth/][iPhone/001.jpg]
+		}
+		
+		// Special treaatment for stanford-mvs-nii
+		if (str_contains(run_param.dataset_prefix, "stanford-mvs"))
+			queries.push_back(query_search_path + "/" + QueryNameLists[q_id] + ".jpg");				// ...Canon/001.jpg
+		// Normal for oxbuildings, paris
+		else
+			queries.push_back(query_search_path + "/" + QueryImgLists[q_id][0]);					// destination query, 
 
         if (run_param.mask_enable && run_param.mask_mode == MASK_ROI)
             masks.push_back(query_search_path + "/" + QueryImgLists[q_id][0] + ".mask");
@@ -1026,10 +1044,8 @@ float search_by_id(const int q_id)
     if (run_param.mask_enable)
     {
         /// Preparing mask (oxford mask, one mask per query)
-        if (str_contains(run_param.dataset_prefix, "oxbuildings1m") ||
-			str_contains(run_param.dataset_prefix, "oxbuildings105k") ||
-			str_contains(run_param.dataset_prefix, "oxbuildings5k") ||
-			str_contains(run_param.dataset_prefix, "paris6k"))
+        if (str_contains(run_param.dataset_prefix, "oxbuildings") ||
+			str_contains(run_param.dataset_prefix, "paris"))
         {
             if (run_param.mask_enable && run_param.mask_mode == MASK_ROI)
             {
@@ -1365,12 +1381,9 @@ float query_handle_basic(const vector<string>& queries, const vector< vector<bow
                 {
                     report_data_key = QueryNameLists[q_id] + "_" + get_filename(queries[result_idx]) + ".qe";
 
-                    for (size_t query_idx = 0; query_idx < queries.size(); query_idx++)
-                    {
-                        total_report.new_data(report_data_key, QueryNameLists[q_id]);
-                        rank_report.new_data(report_data_key + "_id", QueryNameLists[q_id]);
-                        rank_report.new_data(report_data_key + "_score", QueryNameLists[q_id]);
-                    }
+                    total_report.new_data(report_data_key, QueryNameLists[q_id]);
+					rank_report.new_data(report_data_key + "_id", QueryNameLists[q_id]);
+					rank_report.new_data(report_data_key + "_score", QueryNameLists[q_id]);
                 }
 
                 qe_query.push_back(get_directory(queries[result_idx]) + "/" + get_filename(queries[result_idx]) + ".qe");
@@ -1459,12 +1472,9 @@ float query_handle_basic(const vector<string>& queries, const vector< vector<bow
                     {
                         report_data_key = QueryNameLists[q_id] + "_" + get_filename(queries[result_idx]) + ".qb_it" + toString(qb_round);
 
-                        for (size_t query_idx = 0; query_idx < queries.size(); query_idx++)
-                        {
-                            total_report.new_data(report_data_key, QueryNameLists[q_id]);
-                            rank_report.new_data(report_data_key + "_id", QueryNameLists[q_id]);
-                            rank_report.new_data(report_data_key + "_score", QueryNameLists[q_id]);
-                        }
+                        total_report.new_data(report_data_key, QueryNameLists[q_id]);
+						rank_report.new_data(report_data_key + "_id", QueryNameLists[q_id]);
+						rank_report.new_data(report_data_key + "_score", QueryNameLists[q_id]);
                     }
 
                     qb_query.push_back(get_directory(queries[result_idx]) + "/" + get_filename(queries[result_idx]) + ".qb_it" + toString(qb_round));
@@ -1473,6 +1483,10 @@ float query_handle_basic(const vector<string>& queries, const vector< vector<bow
                     qb qb_builder(run_param, inverted_hist.get_idf(), "rank2qb_" + get_filename(queries[result_idx]) + "_it" + toString(qb_round), qb_working_path);
 
                     /// Preparing
+					// If video, add query as the first top-k
+					if (run_param.pooling_enable)
+						qb_builder.add_bow(query_bows[result_idx]);
+					// Add rank
                     qb_builder.add_bow_from_rank(results[result_idx], run_param.qb_topk);
                     // Clear result memory for later process, qb next round or late fusion
                     vector<result_object>().swap(results[result_idx]);
@@ -1505,7 +1519,7 @@ float query_handle_basic(const vector<string>& queries, const vector< vector<bow
                             bow_bin_object* bin = qb_bowsigs[result_idx][bin_idx];
                             for (size_t feature_idx = 0; feature_idx < bin->features.size(); feature_idx++)
                                 dumper.collect_kp(dataset_id, bin->cluster_id, bin->weight, bin->fg, bin->features[feature_idx]->sequence_id, bin->features[feature_idx]->kp);
-                                /// sequence_id already assigned by QE add bow
+                                /// sequence_id already assigned by QB add bow
                         }
 
                         // Dump
@@ -1538,12 +1552,9 @@ float query_handle_basic(const vector<string>& queries, const vector< vector<bow
             {
                 report_data_key = QueryNameLists[q_id] + "_" + QueryNameLists[q_id] + ".latefused";
 
-                for (size_t query_idx = 0; query_idx < queries.size(); query_idx++)
-                {
-                    total_report.new_data(report_data_key, QueryNameLists[q_id]);
-                    rank_report.new_data(report_data_key + "_id", QueryNameLists[q_id]);
-                    rank_report.new_data(report_data_key + "_score", QueryNameLists[q_id]);
-                }
+                total_report.new_data(report_data_key, QueryNameLists[q_id]);
+				rank_report.new_data(report_data_key + "_id", QueryNameLists[q_id]);
+				rank_report.new_data(report_data_key + "_score", QueryNameLists[q_id]);
             }
 
             /// Processing late fusion
@@ -2797,6 +2808,7 @@ void Evaluate()
     /// Oxford building dataset
     if (str_contains(run_param.dataset_prefix, "oxbuildings") ||
 		str_contains(run_param.dataset_prefix, "paris") ||
+		str_contains(run_param.dataset_prefix, "stanford-mvs") ||
 		str_contains(run_param.dataset_prefix, "smalltest"))
     {
         float sum_map = 0.0f;
@@ -2881,10 +2893,9 @@ void CheckGroundtruth(vector<result_object>& result, const int q_id)
     size_t result_size = result.size();
 
     /// OX 5k
-    if (str_contains(run_param.dataset_prefix, "oxbuildings1m") ||
-		str_contains(run_param.dataset_prefix, "oxbuildings105k") ||
-        str_contains(run_param.dataset_prefix, "oxbuildings5k") ||
-        str_contains(run_param.dataset_prefix, "paris6k"))
+    if (str_contains(run_param.dataset_prefix, "oxbuildings") ||
+        str_contains(run_param.dataset_prefix, "paris") ||
+		str_contains(run_param.dataset_prefix, "stanford-mvs"))
     {
         for (size_t result_idx = 0; result_idx < result_size; result_idx++)
         {
@@ -2913,6 +2924,7 @@ void CheckGroundtruth(vector<result_object>& result, const int q_id)
 float Compute_map(const string& query_topic)
 {
     stringstream cmd;
+	float map_ret = 0.0f;
 
     if (str_contains(run_param.dataset_prefix, "oxbuildings") ||
 		str_contains(run_param.dataset_prefix, "paris") ||
@@ -2921,6 +2933,10 @@ float Compute_map(const string& query_topic)
         string ap_binary = run_param.code_root_dir + "/ox_ap/bin/Release/ox_ap";
 
         cmd << ap_binary << " " << groundtruth_path.str() << " " << evalrank_path.str();
+		
+		cout << "map_cmd: " << cmd.str() << endl;
+
+		return atof(exec(cmd.str()).c_str());
     }
     else if (str_contains(run_param.dataset_prefix, "ins201"))
     {
@@ -2928,10 +2944,39 @@ float Compute_map(const string& query_topic)
 
         // trec_eval -q -a -c groundtruth_file ranklist_file eval_top_n
         cmd << ap_binary << " -q -a -c " << groundtruth_path.str() << " " << trecrank_path.str() << " 1000 | grep -E 'infAP.*" << query_topic << "' | cut -f3";
-    }
-    cout << "map_cmd: " << cmd.str() << endl;
+		
+		cout << "map_cmd: " << cmd.str() << endl;
 
-    return atof(exec(cmd.str()).c_str());
+		return atof(exec(cmd.str()).c_str());
+    }
+	else if (str_contains(run_param.dataset_prefix, "stanford-mvs"))
+	{
+		int target_topic_id = 0;
+		{
+			// evalrank_path = 5800_061.jpg_evalrank.txt;
+			string eval_name = get_filename(evalrank_path.str());
+			size_t start = eval_name.find_first_of('_');
+			size_t end = eval_name.find_first_of('.');
+			target_topic_id = atoi(eval_name.substr(start + 1, end).c_str());
+		}
+		vector<string> result = text_readline2vector(evalrank_path.str());
+		int total_rank = result.size();
+		cout << "Total rank = " << total_rank << endl;
+		cout << "Target topic = " << target_topic_id << endl;
+		cout << "Found topic at = ";
+		for (int rank_id = 1; rank_id <= total_rank; rank_id++)
+		{
+			if (atoi(result[rank_id - 1].c_str()) == target_topic_id)
+			{
+				map_ret = 1.0f / rank_id;				
+				cout << rank_id << endl;
+			}
+		}
+		
+		return map_ret;
+	}
+    
+	return 0.0f;
 }
 
 void ExportRawRank(const vector<result_object>& result, const string& query_path, float map)
@@ -2975,21 +3020,21 @@ void ExportRawRank(const vector<result_object>& result, const string& query_path
                 //rank_File << dataset_path.str() << "," << result[index].second << endl;
                 size_t shot_frame_start = Pool2ImagesIdxRange[result[index].dataset_id].first;
                 size_t shot_frame_end = Pool2ImagesIdxRange[result[index].dataset_id].second;
-                size_t shot_size = 2;
-                //size_t shot_size = shot_frame_end - shot_frame_start;
+                //size_t shot_size = 2;																							// only 2 frames
+                size_t shot_size = shot_frame_end - shot_frame_start;															// all frame count
                 rank_File << index << "|" <<																					// rank idx
                 	result[index].score  << "|" <<																				// score
                 	ParentPaths[Pool2ParentsIdx[result[index].dataset_id]] << "|" <<											// path to source dataset image
                 	shot_size << "|";	                                                                                        // total frame of this shot
-                	rank_File << ImgLists[shot_frame_start] << "," << ImgLists[shot_frame_end];
-					/*for (size_t frame_idx = shot_frame_start; frame_idx < shot_frame_end; frame_idx++)
+                	//rank_File << ImgLists[shot_frame_start] << "," << ImgLists[shot_frame_end];								// first,last frame
+					for (size_t frame_idx = shot_frame_start; frame_idx < shot_frame_end; frame_idx++)							// all frames
 					{
 					    if (frame_idx != shot_frame_start)
                             rank_File << ",";
 						rank_File << ImgLists[frame_idx];                                                                       // image filename
-					}*/
+					}
                 if (result[index].info != "")
-                    rank_File << "|" << result[index].info;                                                                            // extra info
+                    rank_File << "|" << result[index].info;                                                                     // extra info
                 rank_File << endl;
             }
             else
